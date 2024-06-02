@@ -1,0 +1,5 @@
+LICENSE='MIT'
+MAINTAINER='Nicolas Girard <girard.nicolas@gmail.com>'
+PREFIX=/usr/local
+PROGRAM_NAME='dir2prompt'
+SHORT_DESC='Generate a prompt string for your shell based on the current directory.'
