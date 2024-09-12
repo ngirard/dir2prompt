@@ -197,7 +197,7 @@ if [ "$0" = "${BASH_SOURCE:-$0}" ]; then
     args=($(parse_arguments "$@"))
     dir="${args[0]}"
     mode="${args[1]}"
-    ignore_file="${args[2]}"
+    ignore_file="${args[2]:-}"
     filter_options=("${args[@]:3}")
     check_dependencies "${DEPENDENCIES[@]}"
     main "$dir" "$mode" "$ignore_file" "${filter_options[@]}"
