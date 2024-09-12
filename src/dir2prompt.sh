@@ -6,12 +6,13 @@ function usage {
     cat <<-EoN
 	Usage: ${PROGRAM} [OPTIONS] [DIRECTORY]	
 	Options:
-	  --tree-only          Display only the directory tree.
-	  --contents-only      Display only the contents of non-binary files.
-	  --type <TYPE>        Limit search to files matching the given type.
-	  --max-depth <NUM>    Limit the depth of directory traversal.
-	  --max-filesize <NUM> Ignore files larger than NUM in size.
-	  --help               Display this help message.
+	  --contents-only        Display only the contents of non-binary files.
+	  --help                 Display this help message.
+	  --ignore-file <FILE>   Specify a custom ignore file (default: .promptignore in the target directory).
+	  --max-depth <NUM>      Limit the depth of directory traversal.
+	  --max-filesize <NUM>   Ignore files larger than NUM in size.
+	  --tree-only            Display only the directory tree.
+	  --type <TYPE>          Limit search to files matching the given type.
 	
 	If no directory is specified, the current directory is used.
 EoN
@@ -56,6 +57,7 @@ function fatal {
 # Parse command-line arguments
 function parse_arguments {
     local dir="."
+    local ignore_file=""
     local mode="both"
     local filter_options=()
 
@@ -82,6 +84,10 @@ function parse_arguments {
             --help)
                 mode="help"
                 ;;
+            --ignore-file)
+                ignore_file="$2"
+                shift
+                ;;
             *)
                 dir="$1"
                 ;;
@@ -89,7 +95,7 @@ function parse_arguments {
         shift
     done
 
-    echo "$dir" "$mode" "${filter_options[@]}"
+    echo "$dir" "$mode" "$ignore_file" "${filter_options[@]}"
 } # End of function parse_arguments
 
 # Check if required dependencies are installed
@@ -151,9 +157,13 @@ function generate_contents {
 function main {
     local dir="$1"
     local mode="$2"
-    shift 2
+    local ignore_file="$3"
+    shift 3
     local filter_options=("$@")
 
+    if [[ -z "$ignore_file" ]]; then
+        ignore_file="$dir/.promptignore"
+    fi
     if [[ -f "$dir/.promptignore" ]]; then
         filter_options+=("--ignore-file" "$dir/.promptignore")
     fi
@@ -187,7 +197,8 @@ if [ "$0" = "${BASH_SOURCE:-$0}" ]; then
     args=($(parse_arguments "$@"))
     dir="${args[0]}"
     mode="${args[1]}"
-    filter_options=("${args[@]:2}")
+    ignore_file="${args[2]}"
+    filter_options=("${args[@]:3}")
     check_dependencies "${DEPENDENCIES[@]}"
-    main "$dir" "$mode" "${filter_options[@]}"
+    main "$dir" "$mode" "$ignore_file" "${filter_options[@]}"
 fi
