@@ -10,7 +10,7 @@ VERSION := `cat version`
 just := 'just --justfile "'+justfile()+'"'
 
 # Installation prefix - CI uses ~/.local, system uses /usr/local
-PREFIX := if env_var_or_default("CI", "") != "" { env_var("HOME") + "/.local" } else { "/usr/local" }
+PREREQ_PREFIX := if env_var_or_default("CI", "") != "" { env_var("HOME") + "/.local" } else { "/usr/local" }
 
 # Sudo command - empty in CI, sudo otherwise
 SUDO := if env_var_or_default("CI", "") != "" { "" } else { "sudo" }
@@ -30,14 +30,14 @@ _ensure_eget:
     # Download eget
     curl https://zyedidia.github.io/eget.sh | sh
     
-    # Install to PREFIX
-    mkdir -p "{{PREFIX}}/bin"
-    {{SUDO}} install eget "{{PREFIX}}/bin"
+    # Install to PREREQ_PREFIX
+    mkdir -p "{{PREREQ_PREFIX}}/bin"
+    {{SUDO}} install eget "{{PREREQ_PREFIX}}/bin"
     rm -f eget
     
     # Add to PATH in CI
     if [[ -n "${CI}" ]]; then
-        echo "{{PREFIX}}/bin" >> $GITHUB_PATH
+        echo "{{PREREQ_PREFIX}}/bin" >> $GITHUB_PATH
     fi
 
 # Ensure Nfpm is installed, and install it if not
@@ -48,12 +48,12 @@ _ensure_nfpm: _ensure_eget
     fi
     printf "Installing Nfpm...\n"
     
-    # Use eget to install directly to PREFIX
-    eget --to="{{PREFIX}}/bin" -a ^sbom goreleaser/nfpm
+    # Use eget to install directly to PREREQ_PREFIX
+    eget --to="{{PREREQ_PREFIX}}/bin" -a ^sbom goreleaser/nfpm
     
     # Make executable (sudo not needed as eget creates it executable)
-    if [[ -z "${CI}" ]] && [[ "{{PREFIX}}" == "/usr/local" ]]; then
-        {{SUDO}} chmod +x "{{PREFIX}}/bin/nfpm"
+    if [[ -z "${CI}" ]] && [[ "{{PREREQ_PREFIX}}" == "/usr/local" ]]; then
+        {{SUDO}} chmod +x "{{PREREQ_PREFIX}}/bin/nfpm"
     fi
 
 # Clean up the project
