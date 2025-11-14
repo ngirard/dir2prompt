@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup just
+        uses: extractions/setup-just@v2
+
+      - name: Load shared environment
+        run: |
+          source ci_env
+          echo "BUILD_DIR=$BUILD_DIR" >> "$GITHUB_ENV"
+
+      - name: Validate version matches tag
+        run: |
+          VERSION=$(cat version)
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          if [[ "$VERSION" != "$TAG_VERSION" ]]; then
+            echo "Error: version file ($VERSION) doesn't match tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      - name: Build and package
+        run: just package
+
+      - name: Generate checksums
+        run: just checksums
+
+      - name: Extract release notes
+        id: release_notes
+        run: |
+          VERSION=$(cat version)
+          echo "RELEASE_NAME=Release v${VERSION}" >> $GITHUB_OUTPUT
+          
+          # Extract version section from CHANGELOG.md
+          if [[ -f CHANGELOG.md ]]; then
+            awk '/^## \['"${VERSION}"'\]/,/^## \[/{
+              if(/^## \['"${VERSION}"'\]/) next;
+              if(/^## \[/) exit;
+              print
+            }' CHANGELOG.md > release_notes.md
+            
+            # If empty, use default message
+            if [[ ! -s release_notes.md ]]; then
+              echo "Release v${VERSION}" > release_notes.md
+            fi
+          else
+            echo "Release v${VERSION}" > release_notes.md
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.release_notes.outputs.RELEASE_NAME }}
+          body_path: release_notes.md
+          files: |
+            ${{ env.BUILD_DIR }}/*.deb
+            ${{ env.BUILD_DIR }}/*.rpm
+            ${{ env.BUILD_DIR }}/*.apk
+            ${{ env.BUILD_DIR }}/*.pkg.tar.zst
+            ${{ env.BUILD_DIR }}/SHA256SUMS
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

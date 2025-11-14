@@ -1,0 +1,24 @@
+name: ${PACKAGE_NAME}
+arch: amd64
+platform: linux
+section: default
+priority: extra
+maintainer:  "${MAINTAINER}"
+description: "${DESCRIPTION}"
+vendor: "${VENDOR}"
+homepage: "${HOMEPAGE}"
+license: "${LICENSE}"
+disable_globbing: false
+
+# Version
+version: ${VERSION}
+version_schema: semver
+
+# Contents to add to the package
+contents:
+  - src: "${BUILD_DIR}/${PROGRAM_NAME}.sh"
+    dst: "${PREFIX}/bin/${PROGRAM_NAME}"
+    expand: true
+
+# Umask to be used on files without explicit mode set.
+umask: 0o002
