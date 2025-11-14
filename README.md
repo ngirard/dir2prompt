@@ -15,9 +15,26 @@ Generate a prompt string for your shell based on the current directory structure
 - Ignore files larger than a specified size
 - Use custom ignore files to exclude certain files or directories
 
+## Dependencies
+
+- `rg` (ripgrep): Required for efficient file searching
+- `tree`: Required for directory tree visualization
+
 ## Installation
 
 ```bash
+# Install dependencies
+# On Ubuntu/Debian:
+sudo apt-get install ripgrep tree
+
+# On macOS with Homebrew:
+brew install ripgrep tree
+
+# On Fedora/RHEL:
+sudo dnf install ripgrep tree
+
+# For other systems, please refer to the ripgrep and tree installation guides
+
 # Clone the repository
 git clone https://github.com/yourusername/dir2prompt.git
 
@@ -34,7 +51,7 @@ sudo cp build/dir2prompt /usr/local/bin/
 ## Usage
 
 ```
-Usage: dir2prompt [OPTIONS] [DIRECTORY]	
+Usage: dir2prompt [OPTIONS] [DIRECTORY]
 Options:
   --tree-only          Display only the directory tree.
   --contents-only      Display only the contents of non-binary files.
@@ -50,21 +67,25 @@ If no directory is specified, the current directory is used.
 ## Examples
 
 1. Generate a snapshot of the current directory:
+
    ```
    dir2prompt
    ```
 
 2. Display only the directory tree for a specific folder:
+
    ```
    dir2prompt --tree-only /path/to/your/project
    ```
 
 3. Show contents of only Python files, limited to a depth of 2:
+
    ```
    dir2prompt --type py --max-depth 2
    ```
 
 4. Use a custom ignore file:
+
    ```
    dir2prompt --ignore-file /path/to/custom/ignorefile
    ```
@@ -74,6 +95,7 @@ If no directory is specified, the current directory is used.
 By default, `dir2prompt` looks for a `.promptignore` file in the target directory. You can specify patterns in this file to exclude certain files or directories from the snapshot. The syntax is similar to `.gitignore`.
 
 Example `.promptignore`:
+
 ```
 *.log
 node_modules/

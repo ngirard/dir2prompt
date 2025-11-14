@@ -54,48 +54,64 @@ function fatal {
 # ——————————
 # Argument parsing and dependency checking
 
-# Parse command-line arguments
+# Parse command-line arguments into global variables
 function parse_arguments {
-    local dir="."
-    local ignore_file=""
-    local mode="both"
-    local filter_options=()
+    PARSED_DIR="."
+    PARSED_IGNORE_FILE=""
+    PARSED_MODE="both"
+    PARSED_FILTER_OPTIONS=()
 
     while (( $# > 0 )); do
         case "$1" in
             --tree-only)
-                mode="tree"
+                PARSED_MODE="tree"
                 ;;
             --contents-only)
-                mode="contents"
+                PARSED_MODE="contents"
                 ;;
             --type)
-                filter_options+=("--type" "$2")
+                if [[ -z "${2:-}" ]]; then
+                    fatal "Option --type requires an argument"
+                fi
+                PARSED_FILTER_OPTIONS+=("--type" "$2")
                 shift
                 ;;
             --max-depth)
-                filter_options+=("--max-depth" "$2")
+                if [[ -z "${2:-}" ]]; then
+                    fatal "Option --max-depth requires an argument"
+                fi
+                PARSED_FILTER_OPTIONS+=("--max-depth" "$2")
                 shift
                 ;;
             --max-filesize)
-                filter_options+=("--max-filesize" "$2")
+                if [[ -z "${2:-}" ]]; then
+                    fatal "Option --max-filesize requires an argument"
+                fi
+                PARSED_FILTER_OPTIONS+=("--max-filesize" "$2")
                 shift
                 ;;
             --help)
-                mode="help"
+                PARSED_MODE="help"
                 ;;
             --ignore-file)
-                ignore_file="$2"
+                if [[ -z "${2:-}" ]]; then
+                    fatal "Option --ignore-file requires an argument"
+                fi
+                PARSED_IGNORE_FILE="$2"
                 shift
                 ;;
+            -*)
+                fatal "Unknown option: %s" "$1"
+                ;;
             *)
-                dir="$1"
+                if [[ "$PARSED_DIR" != "." ]]; then
+                    fatal "Only one directory can be specified"
+                fi
+                PARSED_DIR="$1"
                 ;;
         esac
         shift
     done
-
-    echo "$dir" "$mode" "$ignore_file" "${filter_options[@]}"
 } # End of function parse_arguments
 
 # Check if required dependencies are installed
@@ -117,14 +133,14 @@ function generate_tree {
     local filter_options=("${@:2}")
     cd "$dir" || fatal "Failed to cd into directory '%s'" "$dir"
     printf '%s\n' "### Directory contents in a tree‐like format"
-    rg --files --sort path "${filter_options[@]}" | tree --fromfile --dirsfirst --noreport
+    rg --files --sort path "${filter_options[@]+"${filter_options[@]}"}" | tree --fromfile --dirsfirst --noreport
     cd - >/dev/null || fatal "Failed to cd back to original directory"
 } # End of function generate_tree
 
 # Get the file list for contents generation
 function get_file_list {
     local filter_options=("${@}")
-    rg --files-with-matches . --sort path "${filter_options[@]}"
+    rg --files-with-matches . --sort path "${filter_options[@]+"${filter_options[@]}"}"
 } # End of function get_file_list
 
 # Visitor pattern to generate contents of a given file
@@ -144,7 +160,7 @@ function generate_contents {
     local filter_options=("${@:2}")
     cd "$dir" || fatal "Failed to cd into directory '%s'" "$dir"
     printf '%s\n' "### Contents of the non-binary files of the directory"
-    get_file_list "${filter_options[@]}" | while read -r file; do
+    get_file_list "${filter_options[@]+"${filter_options[@]}"}" | while read -r file; do
         visit_file "$file"
     done
     cd - >/dev/null || fatal "Failed to cd back to original directory"
@@ -176,15 +192,15 @@ function main {
             exit 0
             ;;
         both)
-            generate_tree "$dir" "${filter_options[@]}"
+            generate_tree "$dir" "${filter_options[@]+"${filter_options[@]}"}"
             printf '\n'
-            generate_contents "$dir" "${filter_options[@]}"
+            generate_contents "$dir" "${filter_options[@]+"${filter_options[@]}"}"
             ;;
         tree)
-            generate_tree "$dir" "${filter_options[@]}"
+            generate_tree "$dir" "${filter_options[@]+"${filter_options[@]}"}"
             ;;
         contents)
-            generate_contents "$dir" "${filter_options[@]}"
+            generate_contents "$dir" "${filter_options[@]+"${filter_options[@]}"}"
             ;;
         *)
             fatal "Invalid mode '%s'" "$mode"
@@ -192,13 +208,9 @@ function main {
     esac
 } # End of function main
 
-# shellcheck disable=3028
+# Main execution
 if [ "$0" = "${BASH_SOURCE:-$0}" ]; then
-    args=($(parse_arguments "$@"))
-    dir="${args[0]}"
-    mode="${args[1]}"
-    ignore_file="${args[2]:-}"
-    filter_options=("${args[@]:3}")
     check_dependencies "${DEPENDENCIES[@]}"
-    main "$dir" "$mode" "$ignore_file" "${filter_options[@]}"
+    parse_arguments "$@"
+    main "$PARSED_DIR" "$PARSED_MODE" "$PARSED_IGNORE_FILE" "${PARSED_FILTER_OPTIONS[@]+"${PARSED_FILTER_OPTIONS[@]}"}"
 fi
