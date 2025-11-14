@@ -57,7 +57,7 @@ function fatal {
 # Parse command-line arguments into global variables
 function parse_arguments {
     PARSED_DIR="."
-    PARSED_IGNORE_FILE=""
+    PARSED_IGNORE_FILES=()
     PARSED_MODE="both"
     PARSED_FILTER_OPTIONS=()
 
@@ -97,7 +97,7 @@ function parse_arguments {
                 if [[ -z "${2:-}" ]]; then
                     fatal "Option --ignore-file requires an argument"
                 fi
-                PARSED_IGNORE_FILE="$2"
+                PARSED_IGNORE_FILES+=("$2")
                 shift
                 ;;
             -*)
@@ -173,15 +173,29 @@ function generate_contents {
 function main {
     local dir="$1"
     local mode="$2"
-    local ignore_file="$3"
-    shift 3
+    shift 2
+    local -a ignore_files=("${@}")
+    shift "${#ignore_files[@]}"
     local filter_options=("$@")
 
-    if [[ -z "$ignore_file" ]]; then
-        ignore_file="$dir/.promptignore"
-    fi
-    if [[ -f "$dir/.promptignore" ]]; then
-        filter_options+=("--ignore-file" "$dir/.promptignore")
+    # Handle ignore files based on new logic
+    if [[ "${#ignore_files[@]}" -gt 0 ]]; then
+        # If --ignore-file option(s) were provided, use them exclusively
+        for ignore_file in "${ignore_files[@]}"; do
+            filter_options+=("--ignore-file" "$ignore_file")
+        done
+    else
+        # No --ignore-file provided: check current dir, then git root
+        if [[ -f "$dir/.promptignore" ]]; then
+            filter_options+=("--ignore-file" "$dir/.promptignore")
+        else
+            # Try to find git root and check for .promptignore there
+            local git_root
+            git_root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)
+            if [[ -n "$git_root" && -f "$git_root/.promptignore" ]]; then
+                filter_options+=("--ignore-file" "$git_root/.promptignore")
+            fi
+        fi
     fi
 
     case "$mode" in
@@ -212,5 +226,5 @@ function main {
 if [ "$0" = "${BASH_SOURCE:-$0}" ]; then
     check_dependencies "${DEPENDENCIES[@]}"
     parse_arguments "$@"
-    main "$PARSED_DIR" "$PARSED_MODE" "$PARSED_IGNORE_FILE" "${PARSED_FILTER_OPTIONS[@]+"${PARSED_FILTER_OPTIONS[@]}"}"
+    main "$PARSED_DIR" "$PARSED_MODE" "${PARSED_IGNORE_FILES[@]+"${PARSED_IGNORE_FILES[@]}"}" "${PARSED_FILTER_OPTIONS[@]+"${PARSED_FILTER_OPTIONS[@]}"}"
 fi
