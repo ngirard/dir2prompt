@@ -1,0 +1,46 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep tree
+
+      - name: Load shared environment
+        run: |
+          source ci_env
+          echo "BUILD_DIR=$BUILD_DIR" >> "$GITHUB_ENV"
+          echo "PROGRAM_NAME=$PROGRAM_NAME" >> "$GITHUB_ENV"
+          echo "MAINTAINER=$MAINTAINER" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          export VERSION=$(cat version)
+          export RELEASE_DATE=$(date +%Y-%m-%d)
+          mkdir -p "${BUILD_DIR}"
+          envsubst '${MAINTAINER},${RELEASE_DATE},${VERSION}' \
+            < src/${PROGRAM_NAME}.sh \
+            > "${BUILD_DIR}/${PROGRAM_NAME}.sh"
+          chmod +x "${BUILD_DIR}/${PROGRAM_NAME}.sh"
+
+      - name: Run tests
+        run: ./tests/test.sh
+
+      - name: Test help output
+        run: ./build/dir2prompt.sh --help
