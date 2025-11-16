@@ -1,2 +1,5 @@
 LICENSE
 version
+CHANGELOG.md
+/ci
+release.md
