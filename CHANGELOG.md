@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2025-11-16
 ### Added
 - `--output <FILE>` option: Write dir2prompt output to a file instead of stdout.
 - Automatic ripgrep configuration file (`.ripgreprc`) support: `dir2prompt` now detects `.ripgreprc` at the git repository root and automatically sets the `RIPGREP_CONFIG_PATH` environment variable, allowing project-level ripgrep customization (e.g., `--follow` for symlinks, custom type definitions).
