@@ -173,10 +173,19 @@ function generate_contents {
 function main {
     local dir="$1"
     local mode="$2"
-    shift 2
-    local -a ignore_files=("${@}")
-    shift "${#ignore_files[@]}"
-    local filter_options=("$@")
+    local ignore_count="$3"
+    shift 3
+    
+    # Extract ignore_files (first ignore_count arguments)
+    local -a ignore_files=()
+    local i
+    for ((i=0; i<ignore_count; i++)); do
+        ignore_files+=("$1")
+        shift
+    done
+    
+    # Remaining arguments are filter_options
+    local -a filter_options=("$@")
 
     # Handle ignore files based on new logic
     if [[ "${#ignore_files[@]}" -gt 0 ]]; then
@@ -226,5 +235,5 @@ function main {
 if [ "$0" = "${BASH_SOURCE:-$0}" ]; then
     check_dependencies "${DEPENDENCIES[@]}"
     parse_arguments "$@"
-    main "$PARSED_DIR" "$PARSED_MODE" "${PARSED_IGNORE_FILES[@]+"${PARSED_IGNORE_FILES[@]}"}" "${PARSED_FILTER_OPTIONS[@]+"${PARSED_FILTER_OPTIONS[@]}"}"
+    main "$PARSED_DIR" "$PARSED_MODE" "${#PARSED_IGNORE_FILES[@]}" "${PARSED_IGNORE_FILES[@]+"${PARSED_IGNORE_FILES[@]}"}" "${PARSED_FILTER_OPTIONS[@]+"${PARSED_FILTER_OPTIONS[@]}"}"
 fi

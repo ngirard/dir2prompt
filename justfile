@@ -125,6 +125,11 @@ release:
 
 # --- For local development ---
 
+# Run the test suite
+test: build
+    #!/usr/bin/env bash
+    ./tests/test.sh
+
 # Generate a directory snapshot for the project
 snapshot:
     #!/usr/bin/env bash
