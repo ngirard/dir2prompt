@@ -11,6 +11,7 @@ function usage {
       --ignore-file <FILE>   Repeatable. Use custom ignore file(s) and skip automatic .promptignore detection.
 	  --max-depth <NUM>      Limit the depth of directory traversal.
 	  --max-filesize <NUM>   Ignore files larger than NUM in size.
+	  --output <FILE>        Write output to FILE instead of stdout.
 	  --tree-only            Display only the directory tree.
 	  --type <TYPE>          Limit search to files matching the given type.
 	
@@ -60,6 +61,7 @@ function parse_arguments {
     PARSED_IGNORE_FILES=()
     PARSED_MODE="both"
     PARSED_FILTER_OPTIONS=()
+    PARSED_OUTPUT_FILE=""
 
     while (( $# > 0 )); do
         case "$1" in
@@ -88,6 +90,13 @@ function parse_arguments {
                     fatal "Option --max-filesize requires an argument"
                 fi
                 PARSED_FILTER_OPTIONS+=("--max-filesize" "$2")
+                shift
+                ;;
+            --output)
+                if [[ -z "${2:-}" ]]; then
+                    fatal "Option --output requires an argument"
+                fi
+                PARSED_OUTPUT_FILE="$2"
                 shift
                 ;;
             --help)
@@ -241,5 +250,13 @@ function main {
 if [ "$0" = "${BASH_SOURCE:-$0}" ]; then
     check_dependencies "${DEPENDENCIES[@]}"
     parse_arguments "$@"
-    main "$PARSED_DIR" "$PARSED_MODE" "${#PARSED_IGNORE_FILES[@]}" "${PARSED_IGNORE_FILES[@]+"${PARSED_IGNORE_FILES[@]}"}" "${PARSED_FILTER_OPTIONS[@]+"${PARSED_FILTER_OPTIONS[@]}"}"
+    
+    # Handle output redirection if --output was specified
+    if [[ -n "$PARSED_OUTPUT_FILE" ]]; then
+        # Redirect stdout to the output file and execute main
+        main "$PARSED_DIR" "$PARSED_MODE" "${#PARSED_IGNORE_FILES[@]}" "${PARSED_IGNORE_FILES[@]+"${PARSED_IGNORE_FILES[@]}"}" "${PARSED_FILTER_OPTIONS[@]+"${PARSED_FILTER_OPTIONS[@]}"}" > "$PARSED_OUTPUT_FILE"
+    else
+        # Output to stdout as usual
+        main "$PARSED_DIR" "$PARSED_MODE" "${#PARSED_IGNORE_FILES[@]}" "${PARSED_IGNORE_FILES[@]+"${PARSED_IGNORE_FILES[@]}"}" "${PARSED_FILTER_OPTIONS[@]+"${PARSED_FILTER_OPTIONS[@]}"}"
+    fi
 fi

@@ -8,10 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `--output <FILE>` option: Write dir2prompt output to a file instead of stdout.
 - Automatic ripgrep configuration file (`.ripgreprc`) support: `dir2prompt` now detects `.ripgreprc` at the git repository root and automatically sets the `RIPGREP_CONFIG_PATH` environment variable, allowing project-level ripgrep customization (e.g., `--follow` for symlinks, custom type definitions).
 - Test coverage for explicit `--ignore-file` precedence and git-root `.promptignore` fallback.
 - README guidance explaining ignore-file layering and how to combine multiple custom ignore files.
 - Unit tests for `.ripgreprc` support, including tests for custom type definitions and `--follow` flag behavior.
+- Unit tests for `--output` option with various modes (tree-only, contents-only, both).
 ### Changed
 - README installation instructions now reference the generated `dir2prompt.sh` artifact and match nfpm packaging output.
 - CLI usage text documents the repeatable `--ignore-file` flag and its override semantics.

@@ -303,6 +303,54 @@ else
     test_fail ".ripgreprc with --follow should make ripgrep follow symlinks"
 fi
 
+# Test 17: --output writes to file instead of stdout
+test_start "--output writes output to specified file"
+output_file=$(mktemp)
+"$DIR2PROMPT" --output "$output_file" "$FIXTURES_DIR" 2>&1
+file_contents=$(cat "$output_file")
+rm "$output_file"
+if assert_contains "$file_contents" "Directory contents in a tree‐like format" && \
+   assert_contains "$file_contents" "Contents of the non-binary files"; then
+    test_pass
+else
+    test_fail "--output should write complete output to file"
+fi
+
+# Test 18: --output with --tree-only
+test_start "--output with --tree-only writes only tree to file"
+output_file=$(mktemp)
+"$DIR2PROMPT" --tree-only --output "$output_file" "$FIXTURES_DIR" 2>&1
+file_contents=$(cat "$output_file")
+rm "$output_file"
+if assert_contains "$file_contents" "Directory contents in a tree‐like format" && \
+   assert_not_contains "$file_contents" "Contents of the non-binary files"; then
+    test_pass
+else
+    test_fail "--output with --tree-only should write only tree to file"
+fi
+
+# Test 19: --output with --contents-only
+test_start "--output with --contents-only writes only contents to file"
+output_file=$(mktemp)
+"$DIR2PROMPT" --contents-only --output "$output_file" "$FIXTURES_DIR" 2>&1
+file_contents=$(cat "$output_file")
+rm "$output_file"
+if assert_contains "$file_contents" "Contents of the non-binary files" && \
+   assert_not_contains "$file_contents" "Directory contents in a tree‐like format"; then
+    test_pass
+else
+    test_fail "--output with --contents-only should write only contents to file"
+fi
+
+# Test 20: --output without argument shows error
+test_start "--output without argument shows error"
+output=$("$DIR2PROMPT" --output 2>&1 || true)
+if assert_contains "$output" "Option --output requires an argument"; then
+    test_pass
+else
+    test_fail "--output without argument should show error message"
+fi
+
 # ============================================================================
 # Summary
 # ============================================================================
