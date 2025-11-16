@@ -187,6 +187,14 @@ function main {
     # Remaining arguments are filter_options
     local -a filter_options=("$@")
 
+    # Handle ripgrep configuration file
+    # See: https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md#configuration-file
+    local git_root
+    git_root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -n "$git_root" && -f "$git_root/.ripgreprc" ]]; then
+        export RIPGREP_CONFIG_PATH="$git_root/.ripgreprc"
+    fi
+
     # Handle ignore files based on new logic
     if [[ "${#ignore_files[@]}" -gt 0 ]]; then
         # When the caller provides --ignore-file flags, only those files define the view.
@@ -199,8 +207,6 @@ function main {
             filter_options+=("--ignore-file" "$dir/.promptignore")
         else
             # Try to find git root and check for .promptignore there
-            local git_root
-            git_root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)
             if [[ -n "$git_root" && -f "$git_root/.promptignore" ]]; then
                 filter_options+=("--ignore-file" "$git_root/.promptignore")
             fi

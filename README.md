@@ -93,7 +93,7 @@ If no directory is specified, the current directory is used.
    dir2prompt --ignore-file /path/to/custom/ignorefile
    ```
 
-## Ignoring Files
+## Ignoring files
 
 `dir2prompt` supports a layered ignore strategy so you can swap between a default view of a project and bespoke queries without editing files in place:
 
@@ -116,6 +116,25 @@ Example of stacking custom ignore files:
 ```
 dir2prompt --ignore-file prompts/base.ignore --ignore-file prompts/docs.ignore
 ```
+
+## Ripgrep configuration
+
+`dir2prompt` automatically respects ripgrep configuration files (`.ripgreprc`) located at the git repository root. When a `.ripgreprc` file is found, it is automatically loaded by setting the `RIPGREP_CONFIG_PATH` environment variable before invoking ripgrep.
+
+This allows you to configure ripgrep behavior for your entire project, such as following symlinks, setting custom type definitions, or adjusting search behavior. For detailed information about ripgrep configuration files, see the [ripgrep configuration documentation](https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md#configuration-file).
+
+Example `.ripgreprc`:
+
+```
+# Follow symbolic links
+--follow
+
+# Add custom type for shell scripts
+--type-add
+shell:*.{sh,bash,zsh}
+```
+
+**Note:** Ripgrep does not automatically discover configuration files; it requires the `RIPGREP_CONFIG_PATH` environment variable to be set. `dir2prompt` handles this automatically when it finds a `.ripgreprc` file at your git repository root.
 
 ## Contributing
 

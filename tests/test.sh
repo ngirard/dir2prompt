@@ -262,6 +262,47 @@ else
     test_fail "Git root .promptignore should filter files in nested directory runs"
 fi
 
+# Test 15: .ripgreprc at git root is respected
+test_start ".ripgreprc at git root is automatically loaded"
+git_tmp=$(mktemp -d)
+pushd "$git_tmp" >/dev/null
+git init -q
+# Create a .ripgreprc that adds a glob pattern to exclude .txt files
+cat <<'EOF' > .ripgreprc
+--glob=!*.txt
+EOF
+echo "included" > file.md
+echo "excluded" > file.txt
+output=$("$DIR2PROMPT" "$git_tmp" 2>&1)
+popd >/dev/null
+rm -rf "$git_tmp"
+if assert_contains "$output" "file.md" && \
+   assert_not_contains "$output" "file.txt"; then
+    test_pass
+else
+    test_fail ".ripgreprc should be loaded and applied when present at git root"
+fi
+
+# Test 16: .ripgreprc with --follow flag
+test_start ".ripgreprc --follow flag makes ripgrep follow symlinks"
+git_tmp=$(mktemp -d)
+pushd "$git_tmp" >/dev/null
+git init -q
+cat <<'EOF' > .ripgreprc
+--follow
+EOF
+mkdir -p target
+echo "content" > target/real.txt
+ln -s target/real.txt linked.txt
+output=$("$DIR2PROMPT" "$git_tmp" 2>&1)
+popd >/dev/null
+rm -rf "$git_tmp"
+if assert_contains "$output" "linked.txt"; then
+    test_pass
+else
+    test_fail ".ripgreprc with --follow should make ripgrep follow symlinks"
+fi
+
 # ============================================================================
 # Summary
 # ============================================================================
