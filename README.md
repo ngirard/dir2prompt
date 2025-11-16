@@ -45,8 +45,11 @@ cd dir2prompt
 just build
 
 # Install the executable (may require sudo)
-sudo cp build/dir2prompt /usr/local/bin/
+# The build step produces build/dir2prompt.sh; install it under the name "dir2prompt"
+sudo install -m 0755 build/dir2prompt.sh /usr/local/bin/dir2prompt
 ```
+
+Binary packages built with nfpm follow the same convention and place the script on your PATH as `dir2prompt` (without the `.sh` suffix).
 
 ## Usage
 
@@ -57,8 +60,8 @@ Options:
   --contents-only      Display only the contents of non-binary files.
   --type <TYPE>        Limit search to files matching the given type.
   --max-depth <NUM>    Limit the depth of directory traversal.
-  --max-filesize <NUM> Ignore files larger than NUM in size.
-  --ignore-file <FILE> Specify a custom ignore file (default: .promptignore in the target directory).
+   --max-filesize <NUM> Ignore files larger than NUM in size.
+   --ignore-file <FILE> Specify one or more custom ignore files (repeatable).
   --help               Display this help message.
 
 If no directory is specified, the current directory is used.
@@ -92,7 +95,13 @@ If no directory is specified, the current directory is used.
 
 ## Ignoring Files
 
-By default, `dir2prompt` looks for a `.promptignore` file in the target directory. You can specify patterns in this file to exclude certain files or directories from the snapshot. The syntax is similar to `.gitignore`.
+`dir2prompt` supports a layered ignore strategy so you can swap between a default view of a project and bespoke queries without editing files in place:
+
+1. **Explicit `--ignore-file` flags take precedence.** When you pass one or more `--ignore-file <FILE>` options (the flag is repeatable), only those files are honored and the automatic `.promptignore` detection is skipped. This makes it possible to describe alternate “queries” for the same repository without having to touch the canonical `.promptignore`.
+2. **Project defaults live in `.promptignore`.** If no `--ignore-file` flag is provided, `dir2prompt` first checks the target directory for `.promptignore`.
+3. **Git root fallback.** Still no match? `dir2prompt` will try to locate the Git root of the target directory and reuse `${git_root}/.promptignore` when it exists. This lets you keep a single default view at the repository level even when running the tool from a nested folder.
+
+Why this precedence? `.promptignore` captures the shared “baseline” for discussing a repository. When you need a different slice of the tree (for example to focus on tests or docs), providing your own ignore files only works if the baseline is bypassed, hence the explicit override behavior.
 
 Example `.promptignore`:
 
@@ -100,6 +109,12 @@ Example `.promptignore`:
 *.log
 node_modules/
 .git/
+```
+
+Example of stacking custom ignore files:
+
+```
+dir2prompt --ignore-file prompts/base.ignore --ignore-file prompts/docs.ignore
 ```
 
 ## Contributing

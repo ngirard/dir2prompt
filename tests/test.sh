@@ -230,6 +230,38 @@ else
     test_fail "Multiple --ignore-file options should combine patterns"
 fi
 
+# Test 13: --ignore-file overrides default .promptignore
+test_start "Explicit --ignore-file bypasses .promptignore"
+override_ignore=$(mktemp)
+output=$("$DIR2PROMPT" --ignore-file "$override_ignore" "$FIXTURES_DIR" 2>&1)
+rm "$override_ignore"
+if assert_contains "$output" "test.log"; then
+    test_pass
+else
+    test_fail "Providing --ignore-file should ignore the directory's .promptignore"
+fi
+
+# Test 14: Git root .promptignore is respected for nested directories
+test_start "Git root .promptignore applies when nested directory has none"
+git_tmp=$(mktemp -d)
+pushd "$git_tmp" >/dev/null
+git init -q
+cat <<'EOF' > .promptignore
+secret.txt
+EOF
+mkdir -p nested
+echo "visible" > nested/visible.txt
+echo "hidden" > nested/secret.txt
+output=$("$DIR2PROMPT" "$git_tmp/nested" 2>&1)
+popd >/dev/null
+rm -rf "$git_tmp"
+if assert_contains "$output" "visible.txt" && \
+   assert_not_contains "$output" "secret.txt"; then
+    test_pass
+else
+    test_fail "Git root .promptignore should filter files in nested directory runs"
+fi
+
 # ============================================================================
 # Summary
 # ============================================================================

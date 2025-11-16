@@ -8,7 +8,7 @@ function usage {
 	Options:
 	  --contents-only        Display only the contents of non-binary files.
 	  --help                 Display this help message.
-	  --ignore-file <FILE>   Specify a custom ignore file (default: .promptignore in the target directory).
+      --ignore-file <FILE>   Repeatable. Use custom ignore file(s) and skip automatic .promptignore detection.
 	  --max-depth <NUM>      Limit the depth of directory traversal.
 	  --max-filesize <NUM>   Ignore files larger than NUM in size.
 	  --tree-only            Display only the directory tree.
@@ -189,12 +189,12 @@ function main {
 
     # Handle ignore files based on new logic
     if [[ "${#ignore_files[@]}" -gt 0 ]]; then
-        # If --ignore-file option(s) were provided, use them exclusively
+        # When the caller provides --ignore-file flags, only those files define the view.
         for ignore_file in "${ignore_files[@]}"; do
             filter_options+=("--ignore-file" "$ignore_file")
         done
     else
-        # No --ignore-file provided: check current dir, then git root
+        # Default view: check directory-local .promptignore, then fall back to the git root.
         if [[ -f "$dir/.promptignore" ]]; then
             filter_options+=("--ignore-file" "$dir/.promptignore")
         else

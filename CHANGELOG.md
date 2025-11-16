@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Test coverage for explicit `--ignore-file` precedence and git-root `.promptignore` fallback.
+- README guidance explaining ignore-file layering and how to combine multiple custom ignore files.
+### Changed
+- README installation instructions now reference the generated `dir2prompt.sh` artifact and match nfpm packaging output.
+- CLI usage text documents the repeatable `--ignore-file` flag and its override semantics.
+### Fixed
+- Fix argument passing bug that dropped all filter options.
+
 ## [0.2.4] - 2025-11-14
 
 ### Fixed
@@ -23,9 +34,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - GitHub CI/CD integration
 
-## [Unreleased]
-
-### Added
-### Changed
-### Fixed
-- Coming soon...
