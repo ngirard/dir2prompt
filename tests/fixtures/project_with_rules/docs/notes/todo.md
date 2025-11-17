@@ -1,0 +1,2 @@
+- [ ] tighten view parsing tests
+- [ ] add more fixtures

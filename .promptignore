@@ -8,3 +8,5 @@ tests
 ci_env
 justfile
 nfpm.yaml
+
+design

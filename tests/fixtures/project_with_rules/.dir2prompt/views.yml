@@ -1,0 +1,28 @@
+rules:
+  baseline:
+    description: Core repository hygiene
+    file: .dir2prompt/rules/baseline.ignore
+  docs:
+    file: .dir2prompt/rules/docs-only.ignore
+    description: Focus on documentation and guides
+  focus:
+    file: .dir2prompt/rules/focus.ignore
+    description: Source-centric focus view
+
+views:
+  default:
+    description: Default baseline view
+    rules: [baseline]
+  docs-deep:
+    description: Documentation and baseline mix
+    rules:
+      - baseline
+      - docs
+    follow_symlinks: true
+    max_depth: 4
+    max_filesize: 4096
+  focus-only:
+    rules:
+      - baseline
+      - focus
+    follow_symlinks: false

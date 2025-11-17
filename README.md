@@ -14,10 +14,12 @@ Generate a prompt string for your shell based on the current directory structure
 - Limit directory traversal depth
 - Ignore files larger than a specified size
 - Use custom ignore files to exclude certain files or directories
+- Optional manifest that explains which views/rules produced the snapshot
 
 ## Dependencies
 
-- `rg` (ripgrep): Required for efficient file searching
+- `fd` (sometimes packaged as `fd-find`): Primary file discovery backend for tree and contents selection
+- `rg` (ripgrep): Used for legacy compatibility paths and helper routines
 - `tree`: Required for directory tree visualization
 
 ## Installation
@@ -25,13 +27,13 @@ Generate a prompt string for your shell based on the current directory structure
 ```bash
 # Install dependencies
 # On Ubuntu/Debian:
-sudo apt-get install ripgrep tree
+sudo apt-get install fd-find ripgrep tree
 
 # On macOS with Homebrew:
-brew install ripgrep tree
+brew install fd ripgrep tree
 
 # On Fedora/RHEL:
-sudo dnf install ripgrep tree
+sudo dnf install fd-find ripgrep tree
 
 # For other systems, please refer to the ripgrep and tree installation guides
 
@@ -62,6 +64,7 @@ Usage: dir2prompt [OPTIONS] [DIRECTORY...]
 Global Options:
   --contents-only        Display only the contents of non-binary files.
   --help                 Display this help message.
+   --manifest[=MODE]      Emit a manifest before the snapshot (summary|full).
   --output <FILE>        Write output to FILE instead of stdout.
   --tree-only            Display only the directory tree.
 
@@ -200,10 +203,73 @@ node_modules/
 .git/
 ```
 
+## Managing rules and views
+
+The `dir2prompt rules` subcommands help you curate `.dir2prompt/views.yml` and the accompanying rule files without touching YAML by hand. These commands run before the main dependency checks, so you can manage configuration even on machines that do not have `rg`, `fd`, or `tree` installed.
+
+### Create or update a rule
+
+```bash
+# Read patterns from a file and attach the rule to the default view
+dir2prompt rules add baseline \
+   --description "Baseline project slice" \
+   --from-file .dir2prompt/rules/baseline.ignore \
+   --view default
+
+# Layer a new rule onto an existing view, deriving the base rule set
+dir2prompt rules add docs-focus \
+   --view docs-deep \
+   --base-view default <<'EOF'
+!docs/**
+docs/legacy/**
+EOF
+```
+
+- `--from-file <PATH>` copies patterns from disk. If omitted, `rules add` reads from `stdin`, so you can pipe ad-hoc definitions as shown above.
+- `--description` is optional; omit it to preserve the previous description.
+- `--view` seeds or extends a view; combining it with `--base-view` replaces the view’s rule list with the base view’s rules plus the new rule, making it easy to branch variants.
+
+### List the available rules and views
+
+```bash
+dir2prompt rules list
+```
+
+This prints a concise inventory that includes each rule’s file path and description plus every view’s rule ordering so you can verify layering quickly.
+
+### Inspect a specific rule
+
+```bash
+dir2prompt rules show docs
+```
+
+`rules show` echoes the resolved file path followed by the current gitignore patterns, which is handy for debugging when multiple views reference the same rule.
+
 Example of stacking custom ignore files:
 
 ```
 dir2prompt --ignore-file prompts/base.ignore --ignore-file prompts/docs.ignore
+```
+
+## Manifest output
+
+Pass `--manifest` when you need a structured explanation of how a snapshot was produced. The manifest always appears before the tree or contents sections and summarizes:
+
+- Target directory and optional `--target` name
+- The view that seeded the rules (including whether it came from the CLI or the baseline)
+- Active rules with their descriptions
+- Any ephemeral rule files layered via `--add-rule-file`
+- Effective constraints (types, max depth, max filesize) and whether symlinks are followed
+- File counts for the enumerated universe `U` and final selection `F`
+
+`--manifest=full` builds on the summary by enumerating every file path that will appear in the tree/contents output, which is useful for diffing or feeding downstream tooling. Because the manifest relies on the fd-based selection pipeline, it is unavailable when forcing `DIR2PROMPT_FINDER=rg`.
+
+```bash
+# Overview only
+dir2prompt --manifest --tree-only --view docs-deep tests/fixtures/project_with_rules
+
+# Include the final file list
+dir2prompt --manifest=full --contents-only ./src
 ```
 
 ## Ripgrep configuration

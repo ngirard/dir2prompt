@@ -6,7 +6,6 @@ set -euo pipefail
 # Colors for output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
-YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
 # Test counters
@@ -19,15 +18,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 FIXTURES_DIR="$SCRIPT_DIR/fixtures/simple_project"
+CONFIG_FIXTURE="$(cd "$SCRIPT_DIR/fixtures/project_with_rules" && pwd)"
 DIR2PROMPT="$BUILD_DIR/dir2prompt.sh"
 
 # Build the script if needed
-if [[ ! -f "$DIR2PROMPT" ]]; then
+if [[ ! -f "$DIR2PROMPT" || "$PROJECT_ROOT/src/dir2prompt.sh" -nt "$DIR2PROMPT" ]]; then
     echo "Building dir2prompt..."
     cd "$PROJECT_ROOT"
-    export VERSION=$(cat version)
+    VERSION=$(cat version)
+    RELEASE_DATE=$(date +%Y-%m-%d)
+    export VERSION
     export MAINTAINER='Nicolas Girard <girard.nicolas@gmail.com>'
-    export RELEASE_DATE=$(date +%Y-%m-%d)
+    export RELEASE_DATE
     mkdir -p "$BUILD_DIR"
     envsubst '${MAINTAINER},${RELEASE_DATE},${VERSION}' < src/dir2prompt.sh > "$DIR2PROMPT"
     chmod +x "$DIR2PROMPT"
@@ -53,7 +55,7 @@ function test_fail {
 function assert_contains {
     local output="$1"
     local expected="$2"
-    if echo "$output" | grep -q "$expected"; then
+    if echo "$output" | grep -F -q "$expected"; then
         return 0
     else
         return 1
@@ -63,7 +65,7 @@ function assert_contains {
 function assert_not_contains {
     local output="$1"
     local expected="$2"
-    if echo "$output" | grep -q "$expected"; then
+    if echo "$output" | grep -F -q "$expected"; then
         return 1
     else
         return 0
@@ -73,7 +75,8 @@ function assert_not_contains {
 function assert_line_count {
     local output="$1"
     local expected="$2"
-    local actual=$(echo "$output" | wc -l)
+    local actual
+    actual=$(echo "$output" | wc -l)
     if [[ "$actual" -eq "$expected" ]]; then
         return 0
     else
@@ -698,6 +701,249 @@ if [[ "$py_count" -eq 2 ]] && [[ "$js_count" -eq 1 ]]; then
     test_pass
 else
     test_fail ".ripgreprc should apply independently per target (py:$py_count js:$js_count)"
+fi
+
+# Test 39: Finder backend parity for tree output
+test_start "fd backend matches rg tree output on fixture"
+rg_output=$(DIR2PROMPT_FINDER=rg "$DIR2PROMPT" --tree-only "$FIXTURES_DIR" 2>&1)
+fd_output=$(DIR2PROMPT_FINDER=fd "$DIR2PROMPT" --tree-only "$FIXTURES_DIR" 2>&1)
+if [[ "$rg_output" == "$fd_output" ]]; then
+    test_pass
+else
+    test_fail "fd backend tree output should match rg backend"
+fi
+
+# Test 40: Config dump exposes parsed view metadata
+test_start "Config debug dump shows parsed views"
+output=$(DIR2PROMPT_DEBUG_CONFIG_DUMP=1 "$DIR2PROMPT" --tree-only "$CONFIG_FIXTURE" 2>&1)
+if assert_contains "$output" "[[DIR2PROMPT-CONFIG dir=\"$CONFIG_FIXTURE\"]]" && \
+   assert_contains "$output" "baseline_view=default" && \
+   assert_contains "$output" "VIEW docs-deep" && \
+   assert_contains "$output" "rules=baseline, docs" && \
+   assert_contains "$output" "follow_symlinks=true"; then
+    test_pass
+else
+    test_fail "Config dump should include baseline view metadata"
+fi
+
+# Test 41: Config dump includes rule include/exclude sets
+test_start "Config dump lists rule includes and excludes"
+output=$(DIR2PROMPT_DEBUG_CONFIG_DUMP=1 "$DIR2PROMPT" --tree-only "$CONFIG_FIXTURE" 2>&1)
+if assert_contains "$output" "RULE docs" && \
+   assert_contains "$output" "includes=README.md, docs/**" && \
+   assert_contains "$output" "excludes=*"; then
+    test_pass
+else
+    test_fail "Rule details should expose includes and excludes"
+fi
+
+# Test 42: Debug dump disabled by default
+test_start "Config dump stays silent without env var"
+output=$("$DIR2PROMPT" --tree-only "$CONFIG_FIXTURE" 2>&1)
+if assert_not_contains "$output" "[[DIR2PROMPT-CONFIG"; then
+    test_pass
+else
+    test_fail "Config dump should only appear when explicitly requested"
+fi
+
+# Test 43: Target debug dump captures CLI metadata (simple mode)
+test_start "Target debug dump captures CLI metadata"
+tmp_rule_rel="tests/tmp-rule-$RANDOM.ignore"
+tmp_rule_path="$PROJECT_ROOT/$tmp_rule_rel"
+echo "# temporary" > "$tmp_rule_path"
+expected_rule_path="$tmp_rule_path"
+output=$(DIR2PROMPT_DEBUG_TARGETS=1 "$DIR2PROMPT" --tree-only --view docs-deep --add-rule focus --drop-rule baseline --add-rule-file "$tmp_rule_rel" --follow-symlinks "$CONFIG_FIXTURE" 2>&1)
+rm -f "$tmp_rule_path"
+if assert_contains "$output" "[[DIR2PROMPT-TARGET dir=\"$CONFIG_FIXTURE\"]]" && \
+    assert_contains "$output" "view=docs-deep" && \
+    assert_contains "$output" "add_rules=focus" && \
+    assert_contains "$output" "drop_rules=baseline" && \
+   assert_contains "$output" "add_rule_files=$expected_rule_path" && \
+   assert_contains "$output" "symlinks=follow"; then
+    test_pass
+else
+    test_fail "Debug target dump should reflect CLI metadata"
+fi
+
+# Test 44: Advanced mode target metadata
+test_start "Advanced mode target metadata tracks overrides"
+multi_tmp=$(mktemp -d)
+pushd "$multi_tmp" >/dev/null
+mkdir -p dir1 dir2
+echo "first target" > dir1/a
+echo "second target" > dir2/b
+cp -R "$CONFIG_FIXTURE/.dir2prompt" dir1/.dir2prompt
+cp -R "$CONFIG_FIXTURE/.dir2prompt" dir2/.dir2prompt
+echo "# global" > global-rules.ignore
+echo "# second" > second-rules.ignore
+output=$(DIR2PROMPT_DEBUG_TARGETS=1 "$DIR2PROMPT" --view default --add-rule docs --add-rule-file global-rules.ignore \
+    --target first --dir dir1 --drop-rule docs \
+    --target second --dir dir2 --view focus-only --add-rule focus --add-rule-file second-rules.ignore --no-follow-symlinks 2>&1)
+global_rule_path="$multi_tmp/global-rules.ignore"
+second_rule_path="$multi_tmp/second-rules.ignore"
+popd >/dev/null
+rm -rf "$multi_tmp"
+if assert_contains "$output" "[[DIR2PROMPT-TARGET dir=\"dir1\"]]" && \
+    assert_contains "$output" "view=default" && \
+    assert_contains "$output" "add_rules=docs" && \
+    assert_contains "$output" "drop_rules=docs" && \
+   assert_contains "$output" "add_rule_files=$global_rule_path" && \
+   assert_contains "$output" "symlinks=inherit" && \
+    assert_contains "$output" "[[DIR2PROMPT-TARGET dir=\"dir2\"]]" && \
+    assert_contains "$output" "view=focus-only" && \
+    assert_contains "$output" "add_rules=docs|focus" && \
+    assert_contains "$output" "add_rule_files=$global_rule_path|$second_rule_path" && \
+   assert_contains "$output" "symlinks=nofollow"; then
+    test_pass
+else
+    test_fail "Advanced mode metadata should track per-target overrides"
+fi
+
+# Test 45: Contradictory symlink flags fail fast
+test_start "Contradictory symlink flags are rejected"
+set +e
+output=$("$DIR2PROMPT" --tree-only --follow-symlinks --no-follow-symlinks "$FIXTURES_DIR" 2>&1)
+status=$?
+set -e
+if [[ "$status" -ne 0 ]] && assert_contains "$output" "Contradictory symlink options"; then
+    test_pass
+else
+    test_fail "Conflicting symlink flags should fail (status=$status)"
+fi
+
+# Test 46: rules add creates rule and view
+test_start "rules add writes rule file and default view"
+rules_tmp=$(mktemp -d)
+pushd "$rules_tmp" >/dev/null
+cat <<'EOF' > baseline.ignore
+!README.md
+EOF
+"$DIR2PROMPT" rules add baseline --description "Baseline scope" --from-file baseline.ignore --view default >/dev/null
+view_file="$rules_tmp/.dir2prompt/views.yml"
+rule_file="$rules_tmp/.dir2prompt/rules/baseline.ignore"
+view_contents=$(cat "$view_file")
+rule_contents=$(cat "$rule_file")
+popd >/dev/null
+if assert_contains "$view_contents" "baseline" && \
+     assert_contains "$view_contents" "default" && \
+     assert_contains "$rule_contents" "!README.md"; then
+        test_pass
+else
+        test_fail "rules add should create config and rule files"
+fi
+rm -rf "$rules_tmp"
+
+# Test 47: rules add with base view refreshes existing view
+test_start "rules add --base-view refreshes target view"
+rules_tmp=$(mktemp -d)
+cp -R "$CONFIG_FIXTURE/." "$rules_tmp"
+pushd "$rules_tmp" >/dev/null
+"$DIR2PROMPT" rules add docs-focus --view docs-deep --base-view default <<'EOF' >/dev/null
+!docs/**
+EOF
+list_output=$("$DIR2PROMPT" rules list)
+popd >/dev/null
+if assert_contains "$list_output" "docs-focus" && \
+    assert_contains "$list_output" "rules: baseline, docs-focus"; then
+                test_pass
+else
+                test_fail "rules add --base-view should replace a view's rule list"
+fi
+rm -rf "$rules_tmp"
+
+# Test 48: rules show displays rule contents
+test_start "rules show prints rule file contents"
+pushd "$CONFIG_FIXTURE" >/dev/null
+output=$("$DIR2PROMPT" rules show docs 2>&1)
+popd >/dev/null
+if assert_contains "$output" "Rule: docs" && \
+     assert_contains "$output" ".dir2prompt/rules/docs-only.ignore" && \
+     assert_contains "$output" "!docs/**"; then
+        test_pass
+else
+        test_fail "rules show should print the selected rule"
+fi
+
+# Test 49: Views drive selection output
+test_start "--view docs-deep focuses on docs slice"
+output=$("$DIR2PROMPT" --tree-only --view docs-deep "$CONFIG_FIXTURE" 2>&1)
+if assert_contains "$output" "README.md" && \
+   assert_contains "$output" "guide.md" && \
+   assert_contains "$output" "todo.md" && \
+   assert_not_contains "$output" "main.py"; then
+    test_pass
+else
+    test_fail "docs-deep view should limit output to docs and README"
+fi
+
+# Test 50: Focus view keeps source slice only
+test_start "--view focus-only shows source focus"
+output=$("$DIR2PROMPT" --tree-only --view focus-only "$CONFIG_FIXTURE" 2>&1)
+if assert_contains "$output" "README.md" && \
+   assert_contains "$output" "main.py" && \
+   assert_not_contains "$output" "guide.md"; then
+    test_pass
+else
+    test_fail "focus-only view should highlight README and src while hiding docs"
+fi
+
+# Test 51: Dropping a rule reverts to baseline
+test_start "Dropping docs rule restores broader view"
+output=$("$DIR2PROMPT" --tree-only --view docs-deep --drop-rule docs "$CONFIG_FIXTURE" 2>&1)
+if assert_contains "$output" "main.py" && \
+   assert_contains "$output" "guide.md"; then
+    test_pass
+else
+    test_fail "Dropping docs rule should allow source files back into the selection"
+fi
+
+# Test 52: CLI add-rule layers additional slices
+test_start "Adding docs rule to focus view merges slices"
+output=$("$DIR2PROMPT" --tree-only --view focus-only --add-rule docs "$CONFIG_FIXTURE" 2>&1)
+if assert_contains "$output" "main.py" && \
+   assert_contains "$output" "guide.md" && \
+   assert_contains "$output" "README.md"; then
+    test_pass
+else
+    test_fail "Adding docs rule should merge docs into the focus view"
+fi
+
+# Test 53: Ephemeral rule files apply even without config
+test_start "Ephemeral add-rule-file filters current target"
+tmp_rule=$(mktemp)
+echo "README.md" > "$tmp_rule"
+output=$("$DIR2PROMPT" --tree-only --add-rule-file "$tmp_rule" "$FIXTURES_DIR" 2>&1)
+rm -f "$tmp_rule"
+if assert_not_contains "$output" "README.md"; then
+    test_pass
+else
+    test_fail "Ephemeral rule file should exclude README.md from the snapshot"
+fi
+
+# Test 54: Manifest summary highlights rule provenance
+test_start "--manifest summary lists active rules"
+output=$("$DIR2PROMPT" --manifest --tree-only --view docs-deep "$CONFIG_FIXTURE" 2>&1)
+if assert_contains "$output" "### Manifest for" && \
+   assert_contains "$output" "Manifest mode: summary" && \
+   assert_contains "$output" "View: docs-deep" && \
+   assert_contains "$output" "baseline: Core repository hygiene" && \
+   assert_contains "$output" "docs: Focus on documentation and guides" && \
+   assert_contains "$output" "Counts:"; then
+    test_pass
+else
+    test_fail "--manifest should emit view and rule context"
+fi
+
+# Test 55: Manifest full mode enumerates selection files
+test_start "--manifest=full includes selection listing"
+output=$("$DIR2PROMPT" --manifest=full --contents-only --view docs-deep "$CONFIG_FIXTURE" 2>&1)
+if assert_contains "$output" "Manifest mode: full" && \
+   assert_contains "$output" "Selection files" && \
+   assert_contains "$output" "README.md" && \
+   assert_contains "$output" "Contents of the non-binary files"; then
+    test_pass
+else
+    test_fail "--manifest=full should list the files in the manifest"
 fi
 
 # ============================================================================

@@ -1,0 +1,4 @@
+# Ignore common build output
+node_modules/
+build/
+dist/

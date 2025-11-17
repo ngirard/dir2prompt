@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Multi target cli support.
+- `--manifest`.
+- Rules and views.
+- New files selection system using `fd` instead of `rg` for discovery.
+
 ## [0.3.1] - 2025-11-17
 ### Fixed
 - `--ignore-file` paths are now resolved relative to the directory where `dir2prompt` is invoked, preventing ripgrep errors when targeting nested directories (e.g., `dir2prompt --ignore-file testignore.txt ./docs`).
