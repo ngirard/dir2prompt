@@ -18,6 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 FIXTURES_DIR="$SCRIPT_DIR/fixtures/simple_project"
+PROMPTIGNORE_DIR_FIXTURES="$(cd "$SCRIPT_DIR/fixtures/promptignore_dirs" && pwd)"
 CONFIG_FIXTURE="$(cd "$SCRIPT_DIR/fixtures/project_with_rules" && pwd)"
 DIR2PROMPT="$BUILD_DIR/dir2prompt.sh"
 
@@ -166,6 +167,18 @@ if assert_not_contains "$output" "test.log"; then
     test_pass
 else
     test_fail ".promptignore should exclude *.log files"
+fi
+
+# Test 7b: .promptignore excludes directory trees
+test_start ".promptignore removes directories listed by name"
+output=$("$DIR2PROMPT" "$PROMPTIGNORE_DIR_FIXTURES" 2>&1)
+if assert_not_contains "$output" "design/notes.md" && \
+   assert_not_contains "$output" "tests/spec.txt" && \
+   assert_not_contains "$output" "implementation/plan.md" && \
+   assert_contains "$output" "docs/keep.md"; then
+    test_pass
+else
+    test_fail ".promptignore should hide directories recursively"
 fi
 
 # Test 8: --ignore-file with custom file

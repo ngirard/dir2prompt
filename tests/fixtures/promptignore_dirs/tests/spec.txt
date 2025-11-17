@@ -1,0 +1,3 @@
+Test specification
+
+If this file shows up in output, .promptignore directory exclusions are broken.

@@ -961,14 +961,35 @@ function build_regex_array {
 function path_matches_any_regex {
     local path="$1"
     local -n __regex_ref="$2"
+
+    if [[ -z "$path" ]]; then
+        return 1
+    fi
+
+    # If a directory matches a pattern we must also exclude everything beneath it.
+    # Only files are enumerated, so we compare the file path and each ancestor
+    # directory against the regex list to emulate gitignore semantics.
+    local -a candidates=()
+    local candidate="$path"
+    while :; do
+        candidates+=("$candidate")
+        if [[ "$candidate" != *"/"* ]]; then
+            break
+        fi
+        candidate="${candidate%/*}"
+    done
+
     local regex
-    for regex in "${__regex_ref[@]}"; do
-        if [[ -z "$regex" ]]; then
-            continue
-        fi
-        if [[ "$path" =~ $regex ]]; then
-            return 0
-        fi
+    local candidate_path
+    for candidate_path in "${candidates[@]}"; do
+        for regex in "${__regex_ref[@]}"; do
+            if [[ -z "$regex" ]]; then
+                continue
+            fi
+            if [[ "$candidate_path" =~ $regex ]]; then
+                return 0
+            fi
+        done
     done
     return 1
 }
