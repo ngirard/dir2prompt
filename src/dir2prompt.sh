@@ -107,6 +107,8 @@ function parse_arguments {
     local current_target_max_depth=""
     local current_target_max_filesize=""
     local current_target_ignore_files=()
+    local current_target_has_explicit_types=false
+    local current_target_has_explicit_ignore=false
     local in_target_block=false
 
     # Function to finalize current target and add to arrays
@@ -142,6 +144,8 @@ function parse_arguments {
         current_target_max_depth=""
         current_target_max_filesize=""
         current_target_ignore_files=()
+        current_target_has_explicit_types=false
+        current_target_has_explicit_ignore=false
         in_target_block=false
     }
 
@@ -182,6 +186,8 @@ function parse_arguments {
                 current_target_max_depth="$default_max_depth"
                 current_target_max_filesize="$default_max_filesize"
                 current_target_ignore_files=("${default_ignore_files[@]+"${default_ignore_files[@]}"}")
+                current_target_has_explicit_types=false
+                current_target_has_explicit_ignore=false
                 in_target_block=true
                 shift
                 ;;
@@ -200,7 +206,11 @@ function parse_arguments {
                     fatal "Option --type requires an argument"
                 fi
                 if [[ "$in_target_block" == true ]]; then
-                    # Per-target type
+                    # Per-target type - clear defaults on first explicit type
+                    if [[ "$current_target_has_explicit_types" == false ]]; then
+                        current_target_types=()
+                        current_target_has_explicit_types=true
+                    fi
                     current_target_types+=("$2")
                 else
                     # Default/global type
@@ -235,6 +245,11 @@ function parse_arguments {
                     fatal "Option --ignore-file requires an argument"
                 fi
                 if [[ "$in_target_block" == true ]]; then
+                    # Per-target ignore - clear defaults on first explicit ignore file
+                    if [[ "$current_target_has_explicit_ignore" == false ]]; then
+                        current_target_ignore_files=()
+                        current_target_has_explicit_ignore=true
+                    fi
                     current_target_ignore_files+=("$2")
                 else
                     default_ignore_files+=("$2")
