@@ -7,6 +7,7 @@ function usage {
     Usage: ${PROGRAM} [OPTIONS] [DIRECTORY...]
            ${PROGRAM} [GLOBAL_OPTIONS] --target NAME --dir PATH [TARGET_OPTIONS]...
            ${PROGRAM} rules <add|list|show|init> [...]
+           ${PROGRAM} explain-path [OPTIONS] PATH [PATH...]
 	
 	Global Options:
 	  --contents-only        Display only the contents of non-binary files.
@@ -70,6 +71,10 @@ function usage {
       rules list                   Show a summary of all configured rules and views.
       rules show <RULE>            Display the gitignore patterns for a specific rule.
       
+    Subcommands (for path-level introspection):
+      explain-path                 Explain why specific paths are included or excluded under the
+                                   current rules, views, and CLI filters.
+
     Use '${PROGRAM} rules --help' for detailed information about the rules subcommand.
 EoN
 } # End of function usage
@@ -1092,6 +1097,293 @@ function apply_pattern_filters {
     done
 }
 
+# Build a reusable selection context for analysis or snapshot generation.
+function build_selection_context_for_dir {
+    local -n __ctx_ref="$1"
+    shift
+    local dir="$1"
+    local types_serialized="$2"
+    local cli_max_depth="$3"
+    local cli_max_filesize="$4"
+    local active_ignore_serialized="$5"
+    local baseline_ignore_serialized="$6"
+    local config_dir="$7"
+    local requested_view="$8"
+    local add_rules_serialized="$9"
+    local drop_rules_serialized="${10}"
+    local add_rule_files_serialized="${11}"
+    local symlink_behavior="${12}"
+    local ripgreprc_include_serialized="${13}"
+    local ripgreprc_exclude_serialized="${14}"
+    local ripgreprc_follow="${15:-inherit}"
+    local ripgreprc_path="${16:-}"
+
+    __ctx_ref=()
+
+    local baseline_view=""
+    if [[ -n "$config_dir" ]]; then
+        baseline_view="${DIR2PROMPT_BASELINE_VIEW[$config_dir]:-}"
+    fi
+
+    local resolved_view=""
+    local view_source="none"
+    if [[ -n "$requested_view" ]]; then
+        if [[ -z "$config_dir" ]]; then
+            fatal "View '%s' requested but no .dir2prompt configuration found for target '%s'" "$requested_view" "$dir"
+        fi
+        resolved_view="$requested_view"
+        view_source="cli"
+    elif [[ -n "$config_dir" ]]; then
+        resolved_view="${DIR2PROMPT_BASELINE_VIEW[$config_dir]:-}"
+        if [[ -n "$resolved_view" ]]; then
+            view_source="baseline"
+        fi
+    fi
+
+    local view_key=""
+    local -a active_rules=()
+    local view_follow=""
+    local view_max_depth=""
+    local view_max_filesize=""
+    if [[ -n "$resolved_view" ]]; then
+        view_key="$config_dir::$resolved_view"
+        if [[ -z "${DIR2PROMPT_VIEW_RULES[$view_key]+x}" ]]; then
+            fatal "View '%s' is not defined for target '%s'" "$resolved_view" "$dir"
+        fi
+        local rules_serialized="${DIR2PROMPT_VIEW_RULES[$view_key]:-}"
+        if [[ -n "$rules_serialized" ]]; then
+            deserialize_serialized_list "$rules_serialized" active_rules
+        fi
+        view_follow="${DIR2PROMPT_VIEW_SYMLINKS[$view_key]:-}"
+        view_max_depth="${DIR2PROMPT_VIEW_MAX_DEPTH[$view_key]:-}"
+        view_max_filesize="${DIR2PROMPT_VIEW_MAX_FILESIZE[$view_key]:-}"
+    fi
+
+    local -a drop_rules=()
+    if [[ -n "$drop_rules_serialized" ]]; then
+        IFS='|' read -ra drop_rules <<< "$drop_rules_serialized"
+    fi
+    if [[ "${#drop_rules[@]}" -gt 0 ]]; then
+        if [[ -z "$config_dir" ]]; then
+            fatal "--drop-rule requires .dir2prompt configuration (target '%s')" "$dir"
+        fi
+        local drop
+        for drop in "${drop_rules[@]}"; do
+            if [[ -z "${DIR2PROMPT_RULE_FILES[$config_dir::$drop]+x}" ]]; then
+                fatal "Rule '%s' referenced by --drop-rule is not defined for target '%s'" "$drop" "$dir"
+            fi
+            local -a filtered=()
+            local rule_name
+            for rule_name in "${active_rules[@]}"; do
+                if [[ "$rule_name" != "$drop" ]]; then
+                    filtered+=("$rule_name")
+                fi
+            done
+            active_rules=("${filtered[@]}")
+        done
+    fi
+
+    local -a add_rules=()
+    if [[ -n "$add_rules_serialized" ]]; then
+        IFS='|' read -ra add_rules <<< "$add_rules_serialized"
+    fi
+    if [[ "${#add_rules[@]}" -gt 0 ]]; then
+        if [[ -z "$config_dir" ]]; then
+            fatal "--add-rule requires .dir2prompt configuration (target '%s')" "$dir"
+        fi
+        local add
+        for add in "${add_rules[@]}"; do
+            if [[ -z "${DIR2PROMPT_RULE_FILES[$config_dir::$add]+x}" ]]; then
+                fatal "Rule '%s' referenced by --add-rule is not defined for target '%s'" "$add" "$dir"
+            fi
+            local exists=false
+            local existing
+            for existing in "${active_rules[@]}"; do
+                if [[ "$existing" == "$add" ]]; then
+                    exists=true
+                    break
+                fi
+            done
+            if [[ "$exists" == false ]]; then
+                active_rules+=("$add")
+            fi
+        done
+    fi
+
+    local -a include_patterns=()
+    local -a exclude_patterns=()
+    if [[ -n "$config_dir" ]]; then
+        local rule_name
+        for rule_name in "${active_rules[@]}"; do
+            load_rule_file_data "$config_dir" "$rule_name" "${DIR2PROMPT_RULE_FILES[$config_dir::$rule_name]}"
+            local includes_serialized="${DIR2PROMPT_RULE_INCLUDES[$config_dir::$rule_name]:-}"
+            local excludes_serialized="${DIR2PROMPT_RULE_EXCLUDES[$config_dir::$rule_name]:-}"
+            local -a tmp_includes=()
+            local -a tmp_excludes=()
+            deserialize_serialized_list "$includes_serialized" tmp_includes
+            deserialize_serialized_list "$excludes_serialized" tmp_excludes
+            include_patterns+=("${tmp_includes[@]}")
+            exclude_patterns+=("${tmp_excludes[@]}")
+        done
+    fi
+
+    local -a add_rule_files=()
+    if [[ -n "$add_rule_files_serialized" ]]; then
+        IFS='|' read -ra add_rule_files <<< "$add_rule_files_serialized"
+    fi
+    local rule_file
+    for rule_file in "${add_rule_files[@]}"; do
+        if [[ -z "$rule_file" ]]; then
+            continue
+        fi
+        if [[ ! -f "$rule_file" ]]; then
+            fatal "Ephemeral rule file '%s' not found" "$rule_file"
+        fi
+        local -a tmp_includes=()
+        local -a tmp_excludes=()
+        parse_gitignore_rule_file "$rule_file" tmp_includes tmp_excludes
+        include_patterns+=("${tmp_includes[@]}")
+        exclude_patterns+=("${tmp_excludes[@]}")
+    done
+
+    local effective_max_depth="$cli_max_depth"
+    if [[ -z "$effective_max_depth" && -n "$view_max_depth" ]]; then
+        effective_max_depth="$view_max_depth"
+    fi
+
+    local effective_max_filesize="$cli_max_filesize"
+    if [[ -z "$effective_max_filesize" && -n "$view_max_filesize" ]]; then
+        effective_max_filesize="$view_max_filesize"
+    fi
+
+    local follow_flag="false"
+    case "$symlink_behavior" in
+        follow)
+            follow_flag="true"
+            ;;
+        nofollow)
+            follow_flag="false"
+            ;;
+        *)
+            if [[ -n "$resolved_view" && "$view_follow" == "true" ]]; then
+                follow_flag="true"
+            elif [[ -n "$resolved_view" && "$view_follow" == "false" ]]; then
+                follow_flag="false"
+            elif [[ "$ripgreprc_follow" == "follow" ]]; then
+                follow_flag="true"
+            elif [[ "$ripgreprc_follow" == "nofollow" ]]; then
+                follow_flag="false"
+            fi
+            ;;
+    esac
+
+    local -a active_ignore_array=()
+    if [[ -n "$active_ignore_serialized" ]]; then
+        IFS='|' read -ra active_ignore_array <<< "$active_ignore_serialized"
+    fi
+
+    local -a baseline_ignore_array=()
+    if [[ -n "$baseline_ignore_serialized" ]]; then
+        IFS='|' read -ra baseline_ignore_array <<< "$baseline_ignore_serialized"
+    fi
+
+    local -a cli_ignore_files=()
+    if [[ "${#active_ignore_array[@]}" -gt 0 ]]; then
+        local -A __dir2prompt_baseline_map=()
+        local baseline_file
+        for baseline_file in "${baseline_ignore_array[@]}"; do
+            __dir2prompt_baseline_map["$baseline_file"]=1
+        done
+        local ignore_candidate
+        for ignore_candidate in "${active_ignore_array[@]}"; do
+            if [[ -z "${__dir2prompt_baseline_map[$ignore_candidate]+x}" ]]; then
+                cli_ignore_files+=("$ignore_candidate")
+            fi
+        done
+        unset __dir2prompt_baseline_map
+    fi
+
+    local cli_ignore_file
+    for cli_ignore_file in "${cli_ignore_files[@]}"; do
+        if [[ -z "$cli_ignore_file" ]]; then
+            continue
+        fi
+        if [[ ! -f "$cli_ignore_file" ]]; then
+            fatal "Ignore file '%s' referenced via --ignore-file was not found" "$cli_ignore_file"
+        fi
+        local -a cli_includes=()
+        local -a cli_excludes=()
+        parse_gitignore_rule_file "$cli_ignore_file" cli_includes cli_excludes
+        include_patterns+=("${cli_includes[@]}")
+        exclude_patterns+=("${cli_excludes[@]}")
+    done
+
+    local -a universe=()
+    mapfile -t universe < <(_enumerate_true_universe "$dir" "$types_serialized" "$effective_max_depth" "$effective_max_filesize" "$follow_flag")
+
+    local -a baseline_include_patterns=()
+    local -a baseline_exclude_patterns=()
+    local baseline_filters_active=false
+
+    local baseline_file
+    for baseline_file in "${baseline_ignore_array[@]}"; do
+        baseline_filters_active=true
+        local -a tmp_includes=()
+        local -a tmp_excludes=()
+        parse_gitignore_rule_file "$baseline_file" tmp_includes tmp_excludes
+        baseline_include_patterns+=("${tmp_includes[@]}")
+        baseline_exclude_patterns+=("${tmp_excludes[@]}")
+    done
+
+    if [[ -n "$ripgreprc_include_serialized" ]]; then
+        baseline_filters_active=true
+        local -a ripgreprc_includes=()
+        IFS='|' read -ra ripgreprc_includes <<< "$ripgreprc_include_serialized"
+        baseline_include_patterns+=("${ripgreprc_includes[@]}")
+    fi
+    if [[ -n "$ripgreprc_exclude_serialized" ]]; then
+        baseline_filters_active=true
+        local -a ripgreprc_excludes=()
+        IFS='|' read -ra ripgreprc_excludes <<< "$ripgreprc_exclude_serialized"
+        baseline_exclude_patterns+=("${ripgreprc_excludes[@]}")
+    fi
+
+    local -a baseline_selection=()
+    if [[ "$baseline_filters_active" == true ]]; then
+        apply_pattern_filters baseline_selection universe baseline_include_patterns baseline_exclude_patterns
+    else
+        baseline_selection=("${universe[@]}")
+    fi
+
+    local -a selection_buffer=()
+    apply_pattern_filters selection_buffer baseline_selection include_patterns exclude_patterns
+
+    __ctx_ref[dir]="$dir"
+    __ctx_ref[resolved_view]="$resolved_view"
+    __ctx_ref[view_source]="$view_source"
+    __ctx_ref[baseline_view]="$baseline_view"
+    __ctx_ref[types_serialized]="$types_serialized"
+    __ctx_ref[effective_max_depth]="$effective_max_depth"
+    __ctx_ref[effective_max_filesize]="$effective_max_filesize"
+    __ctx_ref[follow_symlinks]="$follow_flag"
+    __ctx_ref[ripgreprc_path]="$ripgreprc_path"
+    __ctx_ref[ripgreprc_include]="$ripgreprc_include_serialized"
+    __ctx_ref[ripgreprc_exclude]="$ripgreprc_exclude_serialized"
+    __ctx_ref[active_rules]="$(serialize_array active_rules)"
+    __ctx_ref[include_patterns]="$(serialize_array include_patterns)"
+    __ctx_ref[exclude_patterns]="$(serialize_array exclude_patterns)"
+    __ctx_ref[ephemeral_rule_files]="$(serialize_array add_rule_files)"
+    __ctx_ref[active_ignore_files]="$(serialize_array active_ignore_array)"
+    __ctx_ref[baseline_ignore_files]="$(serialize_array baseline_ignore_array)"
+    __ctx_ref[cli_ignore_files]="$(serialize_array cli_ignore_files)"
+    __ctx_ref[baseline_includes]="$(serialize_array baseline_include_patterns)"
+    __ctx_ref[baseline_excludes]="$(serialize_array baseline_exclude_patterns)"
+    __ctx_ref[baseline_filters_active]="$baseline_filters_active"
+    __ctx_ref[universe]="$(serialize_array universe)"
+    __ctx_ref[baseline_selection]="$(serialize_array baseline_selection)"
+    __ctx_ref[final_selection]="$(serialize_array selection_buffer)"
+}
+
 function build_final_selection {
     local -n __selection_ref="$1"
     shift
@@ -1412,6 +1704,317 @@ function build_final_selection {
     else
         __selection_ref=()
     fi
+}
+
+# Analyze the fate of a single path within a prepared selection context.
+function analyze_path_fate {
+    local -n __out_ref="$1"
+    local -n __ctx_ref="$2"
+    local root="$3"
+    local abs_path="$4"
+    local rel_path="$5"
+
+    __out_ref=()
+
+    local -a universe=()
+    deserialize_serialized_list "${__ctx_ref[universe]:-}" universe
+
+    local -a baseline_selection=()
+    deserialize_serialized_list "${__ctx_ref[baseline_selection]:-}" baseline_selection
+
+    local -a final_selection=()
+    deserialize_serialized_list "${__ctx_ref[final_selection]:-}" final_selection
+
+    local -a baseline_includes=()
+    deserialize_serialized_list "${__ctx_ref[baseline_includes]:-}" baseline_includes
+    local -a baseline_excludes=()
+    deserialize_serialized_list "${__ctx_ref[baseline_excludes]:-}" baseline_excludes
+
+    local -a include_patterns=()
+    deserialize_serialized_list "${__ctx_ref[include_patterns]:-}" include_patterns
+    local -a exclude_patterns=()
+    deserialize_serialized_list "${__ctx_ref[exclude_patterns]:-}" exclude_patterns
+
+    local -a active_rules=()
+    deserialize_serialized_list "${__ctx_ref[active_rules]:-}" active_rules
+
+    local -a ephemeral_rule_files=()
+    deserialize_serialized_list "${__ctx_ref[ephemeral_rule_files]:-}" ephemeral_rule_files
+
+    local -a cli_ignore_files=()
+    deserialize_serialized_list "${__ctx_ref[cli_ignore_files]:-}" cli_ignore_files
+
+    local exists=false
+    if [[ -e "$abs_path" ]]; then
+        exists=true
+    fi
+    __out_ref[exists]="$exists"
+    __out_ref[absolute]="$abs_path"
+    __out_ref[relative]="$rel_path"
+
+    local in_universe=false
+    local candidate
+    for candidate in "${universe[@]}"; do
+        if [[ "$candidate" == "$rel_path" ]]; then
+            in_universe=true
+            break
+        fi
+    done
+    __out_ref[in_universe]="$in_universe"
+
+    local passes_baseline=false
+    local -a baseline_pass_test=("$rel_path")
+    if [[ "${__ctx_ref[baseline_filters_active]:-false}" == "true" ]]; then
+        local -a baseline_result=()
+        apply_pattern_filters baseline_result baseline_pass_test baseline_includes baseline_excludes
+        if [[ "${#baseline_result[@]}" -gt 0 ]]; then
+            passes_baseline=true
+        fi
+    else
+        passes_baseline=true
+    fi
+    __out_ref[passes_baseline]="$passes_baseline"
+
+    local rule_include_match=false
+    if [[ "${#include_patterns[@]}" -gt 0 ]]; then
+        local -a include_regexes=()
+        build_regex_array include_regexes "${include_patterns[@]}"
+        if path_matches_any_regex "$rel_path" include_regexes; then
+            rule_include_match=true
+        fi
+    else
+        rule_include_match=true
+    fi
+
+    local rule_exclude_match=false
+    if [[ "${#exclude_patterns[@]}" -gt 0 ]]; then
+        local -a exclude_regexes=()
+        build_regex_array exclude_regexes "${exclude_patterns[@]}"
+        if path_matches_any_regex "$rel_path" exclude_regexes; then
+            rule_exclude_match=true
+        fi
+    fi
+
+    local passes_rules=false
+    if [[ "$rule_include_match" == true && "$rule_exclude_match" == false ]]; then
+        passes_rules=true
+    fi
+    __out_ref[passes_rules]="$passes_rules"
+    __out_ref[rule_include_match]="$rule_include_match"
+    __out_ref[rule_exclude_match]="$rule_exclude_match"
+    __out_ref[active_rule_count]="${#active_rules[@]}"
+    __out_ref[ephemeral_rule_count]="${#ephemeral_rule_files[@]}"
+    __out_ref[cli_ignore_count]="${#cli_ignore_files[@]}"
+
+    local depth=0
+    if [[ -n "$rel_path" ]]; then
+        depth=$(( $(grep -o "/" <<<"$rel_path" | wc -l || true) + 1 ))
+    fi
+    local max_depth="${__ctx_ref[effective_max_depth]:-}"
+    local passes_depth=true
+    if [[ -n "$max_depth" ]]; then
+        if (( depth > max_depth )); then
+            passes_depth=false
+        fi
+    fi
+
+    local extension=""
+    if [[ "$rel_path" == *.* ]]; then
+        extension="${rel_path##*.}"
+    fi
+    local -a type_filters=()
+    if [[ -n "${__ctx_ref[types_serialized]:-}" ]]; then
+        IFS='|' read -ra type_filters <<< "${__ctx_ref[types_serialized]}"
+    fi
+    local passes_type=true
+    if [[ "${#type_filters[@]}" -gt 0 ]]; then
+        passes_type=false
+        local t
+        for t in "${type_filters[@]}"; do
+            if [[ "$extension" == "$t" ]]; then
+                passes_type=true
+                break
+            fi
+        done
+    fi
+
+    local size_bytes=""
+    if [[ -f "$abs_path" ]]; then
+        size_bytes=$(stat -c%s "$abs_path" 2>/dev/null || true)
+    fi
+    local passes_size=true
+    local max_filesize="${__ctx_ref[effective_max_filesize]:-}"
+    if [[ -n "$max_filesize" && -n "$size_bytes" ]]; then
+        local normalized="${max_filesize,,}"
+        local limit_bytes="$normalized"
+        if [[ "$normalized" =~ ^[0-9]+kb$ ]]; then
+            limit_bytes=$(( ${normalized%kb} * 1024 ))
+        elif [[ "$normalized" =~ ^[0-9]+mb$ ]]; then
+            limit_bytes=$(( ${normalized%mb} * 1024 * 1024 ))
+        elif [[ "$normalized" =~ ^[0-9]+gb$ ]]; then
+            limit_bytes=$(( ${normalized%gb} * 1024 * 1024 * 1024 ))
+        elif [[ "$normalized" =~ ^[0-9]+$ ]]; then
+            limit_bytes="$normalized"
+        fi
+        if [[ "$size_bytes" -gt "$limit_bytes" ]]; then
+            passes_size=false
+        fi
+    fi
+
+    local passes_constraints=true
+    if [[ "$passes_depth" != true || "$passes_type" != true || "$passes_size" != true ]]; then
+        passes_constraints=false
+    fi
+
+    __out_ref[depth]="$depth"
+    __out_ref[passes_depth]="$passes_depth"
+    __out_ref[passes_type]="$passes_type"
+    __out_ref[passes_size]="$passes_size"
+    __out_ref[size_bytes]="$size_bytes"
+    __out_ref[extension]="$extension"
+
+    local in_final=false
+    for candidate in "${final_selection[@]}"; do
+        if [[ "$candidate" == "$rel_path" ]]; then
+            in_final=true
+            break
+        fi
+    done
+    __out_ref[in_final]="$in_final"
+
+    local final_status="excluded"
+    local final_reason=""
+    if [[ "$in_universe" != true ]]; then
+        final_reason="not in universe"
+    elif [[ "$passes_baseline" != true ]]; then
+        final_reason="removed by baseline filters"
+    elif [[ "$passes_rules" != true ]]; then
+        if [[ "${#include_patterns[@]}" -gt 0 && "$rule_include_match" != true ]]; then
+            final_reason="no include rule matched"
+        elif [[ "$rule_exclude_match" == true ]]; then
+            final_reason="excluded by rules"
+        else
+            final_reason="removed by rules"
+        fi
+    elif [[ "$passes_constraints" != true ]]; then
+        if [[ "$passes_type" != true ]]; then
+            final_reason="excluded by type filter"
+        elif [[ "$passes_depth" != true ]]; then
+            final_reason="excluded by depth filter"
+        else
+            final_reason="excluded by size filter"
+        fi
+    else
+        final_status="included"
+        final_reason="survives all filters"
+    fi
+    __out_ref[final_status]="$final_status"
+    __out_ref[final_reason]="$final_reason"
+}
+
+function render_explain_path_text {
+    local -n __analysis_ref="$1"
+    local -n __ctx_ref="$2"
+    local input_label="$3"
+
+    local rel_path="${__analysis_ref[relative]}"
+    printf '### Explanation for path `%s`\n' "$rel_path"
+
+    printf 'Final status: **%s** – %s.\n\n' "${__analysis_ref[final_status]}" "${__analysis_ref[final_reason]}"
+
+    printf 'Summary: '
+    if [[ "${__analysis_ref[final_status]}" == "included" ]]; then
+        printf 'This path is included because it passes baseline filters, rule evaluation, and all CLI constraints.'
+    else
+        printf 'This path is excluded because it %s.' "${__analysis_ref[final_reason]}"
+    fi
+    printf '\n\n'
+
+    printf '#### Phase 1: universe\n'
+    if [[ "${__analysis_ref[exists]}" == true ]]; then
+        printf -- '- The path exists at `%s`.\n' "${__analysis_ref[absolute]}"
+    else
+        printf -- '- The path does not exist on disk.\n'
+    fi
+    if [[ "${__analysis_ref[in_universe]}" == true ]]; then
+        printf -- '- It is present in the fd universe for this invocation.\n'
+    else
+        printf -- '- It is **not** present in the fd universe for this invocation.\n'
+    fi
+    printf '\n'
+
+    printf '#### Phase 2: baseline filters\n'
+    local -a baseline_files=()
+    deserialize_serialized_list "${__ctx_ref[baseline_ignore_files]:-}" baseline_files
+    if [[ "${#baseline_files[@]}" -gt 0 ]]; then
+        local bf
+        for bf in "${baseline_files[@]}"; do
+            printf -- '- Active .promptignore: `%s`\n' "$bf"
+        done
+    else
+        printf -- '- Active .promptignore: (none)\n'
+    fi
+    if [[ -n "${__ctx_ref[ripgreprc_path]:-}" ]]; then
+        printf -- '- Active .ripgreprc: `%s`\n' "${__ctx_ref[ripgreprc_path]}"
+    else
+        printf -- '- Active .ripgreprc: (none)\n'
+    fi
+    if [[ "${__analysis_ref[passes_baseline]}" == true ]]; then
+        printf -- '- Result after baseline filters: **included**.\n'
+    else
+        printf -- '- Result after baseline filters: **excluded**.\n'
+    fi
+    printf '\n'
+
+    printf '#### Phase 3: view and named rules\n'
+    if [[ -n "${__ctx_ref[resolved_view]:-}" ]]; then
+        printf -- '- Active view: `%s` (source: %s).\n' "${__ctx_ref[resolved_view]}" "${__ctx_ref[view_source]}"
+    else
+        printf -- '- Active view: (none).\n'
+    fi
+    printf -- '- Named rules: %s.\n' "${__analysis_ref[active_rule_count]}"
+    if [[ "${__analysis_ref[rule_include_match]}" == true ]]; then
+        printf -- '- At least one include rule matches this path.\n'
+    else
+        printf -- '- No include rule matches this path.\n'
+    fi
+    if [[ "${__analysis_ref[rule_exclude_match]}" == true ]]; then
+        printf -- '- An exclude rule matches this path.\n'
+    else
+        printf -- '- No exclude rule matches this path.\n'
+    fi
+    if [[ "${__analysis_ref[passes_rules]}" == true ]]; then
+        printf -- '- Result after rules: **included**.\n'
+    else
+        printf -- '- Result after rules: **excluded**.\n'
+    fi
+    printf '\n'
+
+    printf '#### Phase 4: ephemeral and CLI ignore rules\n'
+    printf -- '- Ephemeral rule files: %s.\n' "${__analysis_ref[ephemeral_rule_count]}"
+    printf -- '- CLI ignore files: %s.\n' "${__analysis_ref[cli_ignore_count]}"
+    printf '\n'
+
+    printf '#### Phase 5: CLI constraints\n'
+    local type_filters_text="(none)"
+    if [[ -n "${__ctx_ref[types_serialized]:-}" ]]; then
+        type_filters_text="${__ctx_ref[types_serialized]//|/, }"
+    fi
+    printf -- '- Active type filters: %s.\n' "$type_filters_text"
+    printf -- '- Active max depth: %s.\n' "${__ctx_ref[effective_max_depth]:-(none)}"
+    printf -- '- Active max filesize: %s.\n' "${__ctx_ref[effective_max_filesize]:-(none)}"
+    printf -- '- Path depth: %s → %s depth filter.\n' "${__analysis_ref[depth]}" "$( [[ "${__analysis_ref[passes_depth]}" == true ]] && echo passes || echo fails )"
+    if [[ -n "${__analysis_ref[extension]}" ]]; then
+        printf -- '- Path extension: .%s → %s type filter.\n' "${__analysis_ref[extension]}" "$( [[ "${__analysis_ref[passes_type]}" == true ]] && echo passes || echo fails )"
+    else
+        printf -- '- Path extension: (none) → %s type filter.\n' "$( [[ "${__analysis_ref[passes_type]}" == true ]] && echo passes || echo fails )"
+    fi
+    if [[ -n "${__analysis_ref[size_bytes]}" ]]; then
+        printf -- '- File size: %s bytes → %s size filter.\n' "${__analysis_ref[size_bytes]}" "$( [[ "${__analysis_ref[passes_size]}" == true ]] && echo passes || echo fails )"
+    else
+        printf -- '- File size: (unknown) → %s size filter.\n' "$( [[ "${__analysis_ref[passes_size]}" == true ]] && echo passes || echo fails )"
+    fi
+    printf '\n'
 }
 
 function render_tree_from_selection {
@@ -3299,6 +3902,215 @@ function process_target {
     fi
 } # End of function process_target
 
+function handle_explain_path_subcommand {
+    local dir="."
+    local format="text"
+    local view_name=""
+    local -a add_rules=()
+    local -a drop_rules=()
+    local -a add_rule_files=()
+    local -a ignore_files=()
+    local -a type_filters=()
+    local max_depth=""
+    local max_filesize=""
+    local symlink_behavior="inherit"
+
+    local positional_paths=()
+
+    while (( $# > 0 )); do
+        case "$1" in
+            --dir)
+                dir="$2"
+                shift
+                ;;
+            --view)
+                view_name="$2"
+                shift
+                ;;
+            --add-rule)
+                add_rules+=("$2")
+                shift
+                ;;
+            --drop-rule)
+                drop_rules+=("$2")
+                shift
+                ;;
+            --add-rule-file)
+                add_rule_files+=("$2")
+                shift
+                ;;
+            --ignore-file)
+                ignore_files+=("$2")
+                shift
+                ;;
+            --type)
+                type_filters+=("$2")
+                shift
+                ;;
+            --max-depth)
+                max_depth="$2"
+                shift
+                ;;
+            --max-filesize)
+                max_filesize="$2"
+                shift
+                ;;
+            --follow-symlinks)
+                if [[ "$symlink_behavior" == "nofollow" ]]; then
+                    fatal "Contradictory symlink options for explain-path: cannot combine follow and no-follow"
+                fi
+                symlink_behavior="follow"
+                ;;
+            --no-follow-symlinks)
+                if [[ "$symlink_behavior" == "follow" ]]; then
+                    fatal "Contradictory symlink options for explain-path: cannot combine follow and no-follow"
+                fi
+                symlink_behavior="nofollow"
+                ;;
+            --format)
+                format="$2"
+                shift
+                ;;
+            --help)
+                usage
+                exit 0
+                ;;
+            --*)
+                fatal "Unknown option '%s' for explain-path" "$1"
+                ;;
+            *)
+                positional_paths+=("$1")
+                ;;
+        esac
+        shift
+    done
+
+    if [[ "$format" != "text" ]]; then
+        fatal "Format '%s' is not supported yet; only text explanations are available" "$format"
+    fi
+
+    if [[ "${#positional_paths[@]}" -eq 0 ]]; then
+        fatal "explain-path requires at least one PATH argument"
+    fi
+
+    local dir_abs
+    dir_abs=$(cd "$dir" && pwd) || fatal "Failed to resolve directory '%s'" "$dir"
+
+    local config_dir=""
+    if ensure_dir2prompt_config_loaded "$dir_abs" config_dir; then
+        maybe_dump_configuration "$config_dir"
+    fi
+
+    local -a resolved_ignore_files=()
+    local -a baseline_ignore_files=()
+    if [[ "${#ignore_files[@]}" -gt 0 ]]; then
+        local ignore_file
+        for ignore_file in "${ignore_files[@]}"; do
+            local normalized_ignore="$ignore_file"
+            if [[ "$normalized_ignore" != /* ]]; then
+                normalized_ignore="$ORIG_CWD/$normalized_ignore"
+            fi
+            resolved_ignore_files+=("$normalized_ignore")
+        done
+    else
+        local promptignore_path="$dir_abs/.promptignore"
+        if [[ -f "$promptignore_path" ]]; then
+            resolved_ignore_files+=("$promptignore_path")
+            baseline_ignore_files+=("$promptignore_path")
+        else
+            local git_root
+            git_root=$(git -C "$dir_abs" rev-parse --show-toplevel 2>/dev/null || true)
+            if [[ -n "$git_root" && -f "$git_root/.promptignore" ]]; then
+                resolved_ignore_files+=("$git_root/.promptignore")
+                baseline_ignore_files+=("$git_root/.promptignore")
+            fi
+        fi
+    fi
+
+    local active_ignore_serialized=""
+    if [[ "${#resolved_ignore_files[@]}" -gt 0 ]]; then
+        active_ignore_serialized=$(IFS='|'; echo "${resolved_ignore_files[*]}")
+    fi
+
+    local baseline_ignore_serialized=""
+    if [[ "${#baseline_ignore_files[@]}" -gt 0 ]]; then
+        baseline_ignore_serialized=$(IFS='|'; echo "${baseline_ignore_files[*]}")
+    fi
+
+    local ripgreprc_follow="inherit"
+    local ripgreprc_path=""
+    local -a ripgreprc_include_globs=()
+    local -a ripgreprc_exclude_globs=()
+    local git_root
+    git_root=$(git -C "$dir_abs" rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -n "$git_root" && -f "$git_root/.ripgreprc" ]]; then
+        export RIPGREP_CONFIG_PATH="$git_root/.ripgreprc"
+        ripgreprc_path="$git_root/.ripgreprc"
+        parse_ripgreprc_file "$git_root/.ripgreprc" ripgreprc_include_globs ripgreprc_exclude_globs ripgreprc_follow
+    else
+        unset RIPGREP_CONFIG_PATH
+    fi
+
+    local ripgreprc_include_serialized=""
+    if [[ "${#ripgreprc_include_globs[@]}" -gt 0 ]]; then
+        ripgreprc_include_serialized=$(IFS='|'; echo "${ripgreprc_include_globs[*]}")
+    fi
+    local ripgreprc_exclude_serialized=""
+    if [[ "${#ripgreprc_exclude_globs[@]}" -gt 0 ]]; then
+        ripgreprc_exclude_serialized=$(IFS='|'; echo "${ripgreprc_exclude_globs[*]}")
+    fi
+
+    local types_serialized=""
+    if [[ "${#type_filters[@]}" -gt 0 ]]; then
+        types_serialized=$(IFS='|'; echo "${type_filters[*]}")
+    fi
+    local add_rules_serialized=""
+    if [[ "${#add_rules[@]}" -gt 0 ]]; then
+        add_rules_serialized=$(IFS='|'; echo "${add_rules[*]}")
+    fi
+    local drop_rules_serialized=""
+    if [[ "${#drop_rules[@]}" -gt 0 ]]; then
+        drop_rules_serialized=$(IFS='|'; echo "${drop_rules[*]}")
+    fi
+    local add_rule_files_serialized=""
+    if [[ "${#add_rule_files[@]}" -gt 0 ]]; then
+        add_rule_files_serialized=$(IFS='|'; echo "${add_rule_files[*]}")
+    fi
+
+    local -A explain_context=()
+    build_selection_context_for_dir explain_context "$dir_abs" "$types_serialized" "$max_depth" "$max_filesize" "$active_ignore_serialized" "$baseline_ignore_serialized" "$config_dir" "$view_name" "$add_rules_serialized" "$drop_rules_serialized" "$add_rule_files_serialized" "$symlink_behavior" "$ripgreprc_include_serialized" "$ripgreprc_exclude_serialized" "$ripgreprc_follow" "$ripgreprc_path"
+
+    local overall_success=true
+    local path_input
+    for path_input in "${positional_paths[@]}"; do
+        local abs_path="$path_input"
+        if [[ "$abs_path" != /* ]]; then
+            abs_path="$dir_abs/$abs_path"
+        fi
+        local normalized
+        normalized=$(cd "$dir_abs" && realpath -m "$abs_path") || normalized="$abs_path"
+        if [[ "$normalized" != "$dir_abs"/* && "$normalized" != "$dir_abs" ]]; then
+            printf '### Explanation for path `%s`\n' "$path_input"
+            printf 'Final status: **excluded** – outside analysis root.\n\n'
+            overall_success=false
+            continue
+        fi
+        local rel_path
+        rel_path="${normalized#$dir_abs/}"
+        if [[ "$rel_path" == "$dir_abs" ]]; then
+            rel_path="."
+        fi
+        local -A analysis=()
+        analyze_path_fate analysis explain_context "$dir_abs" "$normalized" "$rel_path"
+        render_explain_path_text analysis explain_context "$path_input"
+        printf '\n'
+    done
+
+    if [[ "$overall_success" != true ]]; then
+        exit 3
+    fi
+}
+
 # Main function to orchestrate processing of all targets
 function main {
     local mode="$1"
@@ -3345,6 +4157,12 @@ if [ "$0" = "${BASH_SOURCE:-$0}" ]; then
     if [[ "${1:-}" == "rules" ]]; then
         shift
         handle_rules_subcommand "$@"
+        exit 0
+    fi
+
+    if [[ "${1:-}" == "explain-path" ]]; then
+        shift
+        handle_explain_path_subcommand "$@"
         exit 0
     fi
 
