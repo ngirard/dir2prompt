@@ -11,7 +11,8 @@ function usage {
 	Global Options:
 	  --contents-only        Display only the contents of non-binary files.
 	  --help                 Display this help message.
-      --manifest[=MODE]      Emit a manifest section (modes: summary, full, llm).
+      --manifest[=MODE]      Emit a manifest explaining how files were selected, which is
+                             useful for debugging rules. (modes: summary, full, llm).
       --output <FILE>        Write output to FILE instead of stdout.
 	  --tree-only            Display only the directory tree.
 	
@@ -37,12 +38,16 @@ function usage {
 	  Each target can have its own configuration.
 	  Global target options before the first --target become defaults.
 	
-    Key Concepts:
-      RULE: A named set of gitignore-style patterns. Use '!pattern' to **include**
-          files for a focused context, and 'pattern' to **exclude** them. Rules are
-          reusable building blocks stored in .dir2prompt/rules/<name>.ignore.
-            
-      VIEW: A named combination of multiple rules that creates a specific repository
+    Key Concepts (Rules & Views System):
+      While simple filters like --ignore-file are useful for one-off queries, the
+      rules and views system provides a powerful way to create reusable, shareable
+      "lenses" for your repository that can be committed to version control.
+
+          RULE: A named set of gitignore-style patterns. Use '!pattern' to **include**
+              files for a focused context, and 'pattern' to **exclude** them. Rules are
+              reusable building blocks stored in .dir2prompt/rules/<name>.ignore.
+	        
+          VIEW: A named combination of multiple rules that creates a specific repository
           snapshot perspective (e.g., 'docs-only', 'backend-logic', 'full-context').
           Views are defined in .dir2prompt/views.yml.
     
@@ -57,13 +62,13 @@ function usage {
     Notes:
       - If no directory is specified, the current directory is used.
       - Cannot mix positional directories with --target mode.
-      - Use '${PROGRAM} rules init' to bootstrap configuration for your first time.
 
-    Subcommands:
-      rules add <RULE> [OPTIONS]   Create or update .dir2prompt rules and optional views.
-      rules list                   Show a summary of configured rules and views.
-      rules show <RULE>            Display the gitignore patterns for a rule.
-      rules init                   Initialize .dir2prompt configuration with examples.
+    Subcommands (for managing rules and views):
+      rules init                   Initialize .dir2prompt with an example configuration.
+                                   The best way to get started with rules and views.
+      rules add <RULE> [OPTIONS]   Create or update a rule and optionally add it to a view.
+      rules list                   Show a summary of all configured rules and views.
+      rules show <RULE>            Display the gitignore patterns for a specific rule.
       
     Use '${PROGRAM} rules --help' for detailed information about the rules subcommand.
 EoN
