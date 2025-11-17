@@ -3,3 +3,8 @@ version
 CHANGELOG.md
 /ci
 release.md
+
+tests
+ci_env
+justfile
+nfpm.yaml
