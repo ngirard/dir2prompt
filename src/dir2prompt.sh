@@ -1136,6 +1136,12 @@ function build_final_selection {
         exclude_patterns+=("${ripgreprc_excludes[@]}")
     fi
 
+    local manifest_enabled=false
+    if [[ "${PARSED_MANIFEST_MODE:-off}" != "off" ]]; then
+        manifest_enabled=true
+    fi
+    DIR2PROMPT_LAST_SELECTION_META=()
+
     local effective_max_depth="$cli_max_depth"
     if [[ -z "$effective_max_depth" && -n "$view_max_depth" ]]; then
         effective_max_depth="$view_max_depth"
@@ -1171,7 +1177,9 @@ function build_final_selection {
     mapfile -t universe < <(enumerate_universe_with_fd "$dir" "$types_serialized" "$effective_max_depth" "$effective_max_filesize" "$active_ignore_serialized" "$follow_flag")
 
     local -a include_regexes=()
+    local include_required=false
     if [[ "${#include_patterns[@]}" -gt 0 ]]; then
+        include_required=true
         build_regex_array include_regexes "${include_patterns[@]}"
     fi
 
@@ -1185,37 +1193,45 @@ function build_final_selection {
     for path in "${universe[@]}"; do
         local matches_include=false
         local matches_exclude=false
-        if [[ "${#include_regexes[@]}" -gt 0 ]] && path_matches_any_regex "$path" include_regexes; then
-            matches_include=true
+        if [[ "$include_required" == true ]]; then
+            if path_matches_any_regex "$path" include_regexes; then
+                matches_include=true
+            fi
         fi
         if [[ "${#exclude_regexes[@]}" -gt 0 ]] && path_matches_any_regex "$path" exclude_regexes; then
             matches_exclude=true
         fi
-            if [[ "$matches_include" == true || "$matches_exclude" == false ]]; then
+        local include_pass=true
+        if [[ "$include_required" == true ]]; then
+            include_pass=$matches_include
+        fi
+        if [[ "$include_pass" == true && "$matches_exclude" == false ]]; then
             selection_buffer+=("$path")
         fi
     done
 
-    local active_rules_serialized=""
-    active_rules_serialized=$(serialize_array active_rules)
-    local ephemeral_serialized=""
-    ephemeral_serialized=$(serialize_array add_rule_files)
-    local selection_serialized=""
-    selection_serialized=$(serialize_array selection_buffer)
+    if [[ "$manifest_enabled" == true ]]; then
+        local active_rules_serialized=""
+        active_rules_serialized=$(serialize_array active_rules)
+        local ephemeral_serialized=""
+        ephemeral_serialized=$(serialize_array add_rule_files)
+        local selection_serialized=""
+        selection_serialized=$(serialize_array selection_buffer)
 
-    DIR2PROMPT_LAST_SELECTION_META["active_rules"]="$active_rules_serialized"
-    DIR2PROMPT_LAST_SELECTION_META["ephemeral_rule_files"]="$ephemeral_serialized"
-    DIR2PROMPT_LAST_SELECTION_META["selection_serialized"]="$selection_serialized"
-    DIR2PROMPT_LAST_SELECTION_META["view"]="$resolved_view"
-    DIR2PROMPT_LAST_SELECTION_META["view_source"]="$view_source"
-    DIR2PROMPT_LAST_SELECTION_META["baseline_view"]="$baseline_view"
-    DIR2PROMPT_LAST_SELECTION_META["types"]="$types_serialized"
-    DIR2PROMPT_LAST_SELECTION_META["max_depth"]="$effective_max_depth"
-    DIR2PROMPT_LAST_SELECTION_META["max_filesize"]="$effective_max_filesize"
-    DIR2PROMPT_LAST_SELECTION_META["symlinks"]="$follow_flag"
-    DIR2PROMPT_LAST_SELECTION_META["config_dir"]="$config_dir"
-    DIR2PROMPT_LAST_SELECTION_META["universe_count"]="${#universe[@]}"
-    DIR2PROMPT_LAST_SELECTION_META["selection_count"]="${#selection_buffer[@]}"
+        DIR2PROMPT_LAST_SELECTION_META["active_rules"]="$active_rules_serialized"
+        DIR2PROMPT_LAST_SELECTION_META["ephemeral_rule_files"]="$ephemeral_serialized"
+        DIR2PROMPT_LAST_SELECTION_META["selection_serialized"]="$selection_serialized"
+        DIR2PROMPT_LAST_SELECTION_META["view"]="$resolved_view"
+        DIR2PROMPT_LAST_SELECTION_META["view_source"]="$view_source"
+        DIR2PROMPT_LAST_SELECTION_META["baseline_view"]="$baseline_view"
+        DIR2PROMPT_LAST_SELECTION_META["types"]="$types_serialized"
+        DIR2PROMPT_LAST_SELECTION_META["max_depth"]="$effective_max_depth"
+        DIR2PROMPT_LAST_SELECTION_META["max_filesize"]="$effective_max_filesize"
+        DIR2PROMPT_LAST_SELECTION_META["symlinks"]="$follow_flag"
+        DIR2PROMPT_LAST_SELECTION_META["config_dir"]="$config_dir"
+        DIR2PROMPT_LAST_SELECTION_META["universe_count"]="${#universe[@]}"
+        DIR2PROMPT_LAST_SELECTION_META["selection_count"]="${#selection_buffer[@]}"
+    fi
     if [[ "${#selection_buffer[@]}" -gt 0 ]]; then
         __selection_ref=("${selection_buffer[@]}")
     else

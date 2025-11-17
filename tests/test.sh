@@ -731,7 +731,7 @@ test_start "Config dump lists rule includes and excludes"
 output=$(DIR2PROMPT_DEBUG_CONFIG_DUMP=1 "$DIR2PROMPT" --tree-only "$CONFIG_FIXTURE" 2>&1)
 if assert_contains "$output" "RULE docs" && \
    assert_contains "$output" "includes=README.md, docs/**" && \
-   assert_contains "$output" "excludes=*"; then
+   assert_contains "$output" "  excludes="; then
     test_pass
 else
     test_fail "Rule details should expose includes and excludes"
@@ -944,6 +944,16 @@ if assert_contains "$output" "Manifest mode: full" && \
     test_pass
 else
     test_fail "--manifest=full should list the files in the manifest"
+fi
+
+# Test 56: Manifest counts differentiate universe vs selection
+test_start "--manifest counts reflect filtering"
+output=$("$DIR2PROMPT" --manifest --tree-only --view docs-deep "$CONFIG_FIXTURE" 2>&1)
+if assert_contains "$output" "  - Universe: 4" && \
+   assert_contains "$output" "  - Selection: 3"; then
+    test_pass
+else
+    test_fail "Manifest counts should show total candidates and filtered selection"
 fi
 
 # ============================================================================

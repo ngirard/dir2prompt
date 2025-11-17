@@ -1,4 +1,3 @@
 # keep only python sources and readme
-*
 !src/**/*.py
 !README.md

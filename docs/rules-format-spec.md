@@ -42,10 +42,11 @@ Pure whitelist rule:
 
 ```text
 # .dir2prompt/rules/tests-focus.ignore
-*
 !tests/integration/**
 !tests/smoke/**
 ```
+
+Because include patterns act as a whitelist when present, you do not need a blanket `*` exclusion to drop everything else—the absence of an include match already omits the file.
 
 Mixed rule:
 

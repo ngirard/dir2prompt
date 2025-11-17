@@ -1,4 +1,3 @@
 # keep docs and root README
-*
 !README.md
 !docs/**
