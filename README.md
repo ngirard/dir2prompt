@@ -119,6 +119,20 @@ dir2prompt [GLOBAL_OPTIONS] \
    dir2prompt
    ```
 
+### Explaining why a path is included or excluded
+
+Use the `explain-path` subcommand to understand why specific files are included or filtered out under the current rules and CLI options:
+
+```bash
+# Explain a single file relative to the current directory
+dir2prompt explain-path src/main.py
+
+# Explain a path while applying a view and a type filter
+dir2prompt explain-path --view docs --type md docs/guide.md
+```
+
+The command produces a Markdown explanation that walks through the universe, baseline filters, rules, and CLI constraints.
+
 2. Display only the directory tree for a specific folder:
 
    ```bash
