@@ -956,6 +956,16 @@ else
     test_fail "Manifest counts should show total candidates and filtered selection"
 fi
 
+# Test 57: Manifest counts include .promptignore baseline
+test_start "Manifest counts reflect .promptignore exclusions"
+output=$("$DIR2PROMPT" --manifest --tree-only "$FIXTURES_DIR" 2>&1)
+if assert_contains "$output" "  - Universe: 6" && \
+   assert_contains "$output" "  - Selection: 5"; then
+    test_pass
+else
+    test_fail "Universe should include files hidden by .promptignore"
+fi
+
 # ============================================================================
 # Summary
 # ============================================================================

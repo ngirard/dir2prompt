@@ -982,15 +982,16 @@ function build_final_selection {
     local cli_max_depth="$3"
     local cli_max_filesize="$4"
     local active_ignore_serialized="$5"
-    local config_dir="$6"
-    local requested_view="$7"
-    local add_rules_serialized="$8"
-    local drop_rules_serialized="$9"
-    local add_rule_files_serialized="${10}"
-    local symlink_behavior="${11}"
-    local ripgreprc_include_serialized="${12}"
-    local ripgreprc_exclude_serialized="${13}"
-    local ripgreprc_follow="${14}"
+    local baseline_ignore_serialized="$6"
+    local config_dir="$7"
+    local requested_view="$8"
+    local add_rules_serialized="$9"
+    local drop_rules_serialized="${10}"
+    local add_rule_files_serialized="${11}"
+    local symlink_behavior="${12}"
+    local ripgreprc_include_serialized="${13}"
+    local ripgreprc_exclude_serialized="${14}"
+    local ripgreprc_follow="${15}"
 
     DIR2PROMPT_LAST_SELECTION_META=()
     local baseline_view=""
@@ -1176,6 +1177,41 @@ function build_final_selection {
     local -a universe=()
     mapfile -t universe < <(enumerate_universe_with_fd "$dir" "$types_serialized" "$effective_max_depth" "$effective_max_filesize" "$active_ignore_serialized" "$follow_flag")
 
+    local manifest_universe_count="${#universe[@]}"
+    if [[ "$manifest_enabled" == true && -n "$baseline_ignore_serialized" ]]; then
+        local -a active_ignore_array=()
+        local -a baseline_ignore_array=()
+        if [[ -n "$active_ignore_serialized" ]]; then
+            IFS='|' read -ra active_ignore_array <<< "$active_ignore_serialized"
+        fi
+        if [[ -n "$baseline_ignore_serialized" ]]; then
+            IFS='|' read -ra baseline_ignore_array <<< "$baseline_ignore_serialized"
+        fi
+        if [[ "${#baseline_ignore_array[@]}" -gt 0 ]]; then
+            local -A __dir2prompt_baseline_lookup=()
+            local ignore_path
+            for ignore_path in "${baseline_ignore_array[@]}"; do
+                __dir2prompt_baseline_lookup["$ignore_path"]=1
+            done
+            local -a non_baseline_ignores=()
+            if [[ "${#active_ignore_array[@]}" -gt 0 ]]; then
+                for ignore_path in "${active_ignore_array[@]}"; do
+                    if [[ -z "${__dir2prompt_baseline_lookup[$ignore_path]+x}" ]]; then
+                        non_baseline_ignores+=("$ignore_path")
+                    fi
+                done
+            fi
+            local manifest_ignore_serialized=""
+            if [[ "${#non_baseline_ignores[@]}" -gt 0 ]]; then
+                manifest_ignore_serialized=$(IFS='|'; echo "${non_baseline_ignores[*]}")
+            fi
+            local -a manifest_universe=()
+            mapfile -t manifest_universe < <(enumerate_universe_with_fd "$dir" "$types_serialized" "$effective_max_depth" "$effective_max_filesize" "$manifest_ignore_serialized" "$follow_flag")
+            manifest_universe_count="${#manifest_universe[@]}"
+            unset __dir2prompt_baseline_lookup
+        fi
+    fi
+
     local -a include_regexes=()
     local include_required=false
     if [[ "${#include_patterns[@]}" -gt 0 ]]; then
@@ -1229,7 +1265,7 @@ function build_final_selection {
         DIR2PROMPT_LAST_SELECTION_META["max_filesize"]="$effective_max_filesize"
         DIR2PROMPT_LAST_SELECTION_META["symlinks"]="$follow_flag"
         DIR2PROMPT_LAST_SELECTION_META["config_dir"]="$config_dir"
-        DIR2PROMPT_LAST_SELECTION_META["universe_count"]="${#universe[@]}"
+        DIR2PROMPT_LAST_SELECTION_META["universe_count"]="$manifest_universe_count"
         DIR2PROMPT_LAST_SELECTION_META["selection_count"]="${#selection_buffer[@]}"
     fi
     if [[ "${#selection_buffer[@]}" -gt 0 ]]; then
@@ -2677,6 +2713,7 @@ function process_target {
     # Build filter options from target configuration
     local -a filter_options=()
     local -a resolved_ignore_files=()
+    local -a baseline_ignore_files=()
     
     # Add types
     if [[ -n "$types_serialized" ]]; then
@@ -2742,11 +2779,13 @@ function process_target {
         local promptignore_path="$dir_abs/.promptignore"
         if [[ -f "$promptignore_path" ]]; then
             resolved_ignore_files+=("$promptignore_path")
+            baseline_ignore_files+=("$promptignore_path")
             filter_options+=("--ignore-file" "$promptignore_path")
         else
             # Try to find git root and check for .promptignore there
             if [[ -n "$git_root" && -f "$git_root/.promptignore" ]]; then
                 resolved_ignore_files+=("$git_root/.promptignore")
+                baseline_ignore_files+=("$git_root/.promptignore")
                 filter_options+=("--ignore-file" "$git_root/.promptignore")
             fi
         fi
@@ -2757,9 +2796,14 @@ function process_target {
         active_ignore_serialized=$(IFS='|'; echo "${resolved_ignore_files[*]}")
     fi
 
+    local baseline_ignore_serialized=""
+    if [[ "${#baseline_ignore_files[@]}" -gt 0 ]]; then
+        baseline_ignore_serialized=$(IFS='|'; echo "${baseline_ignore_files[*]}")
+    fi
+
     if [[ "$FINDER_BACKEND" == "fd" ]]; then
     local -a final_selection=()
-    build_final_selection final_selection "$dir" "$types_serialized" "$max_depth" "$max_filesize" "$active_ignore_serialized" "$config_dir" "$view_name" "$add_rules_serialized" "$drop_rules_serialized" "$add_rule_files_serialized" "$symlink_behavior" "$ripgreprc_include_serialized" "$ripgreprc_exclude_serialized" "$ripgreprc_follow"
+    build_final_selection final_selection "$dir" "$types_serialized" "$max_depth" "$max_filesize" "$active_ignore_serialized" "$baseline_ignore_serialized" "$config_dir" "$view_name" "$add_rules_serialized" "$drop_rules_serialized" "$add_rule_files_serialized" "$symlink_behavior" "$ripgreprc_include_serialized" "$ripgreprc_exclude_serialized" "$ripgreprc_follow"
         if [[ "${PARSED_MANIFEST_MODE:-off}" != "off" ]]; then
             emit_manifest_for_target "$dir" "$target_name" "$config_dir"
         fi
