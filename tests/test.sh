@@ -670,6 +670,36 @@ else
     test_fail "Multi-directory --output should write all targets to file"
 fi
 
+# Test 38: Per-target .ripgreprc isolation
+test_start "Each target uses its own .ripgreprc independently"
+rg_tmp=$(mktemp -d)
+pushd "$rg_tmp" >/dev/null
+mkdir -p repo1 repo2
+cd repo1
+git init -q
+cat <<'EOF' > .ripgreprc
+--glob=!*.js
+EOF
+echo "py1" > file.py
+echo "js1" > file.js
+cd ../repo2
+git init -q
+# No .ripgreprc here
+echo "py2" > file.py
+echo "js2" > file.js
+cd ..
+output=$("$DIR2PROMPT" --tree-only repo1 repo2 2>&1)
+popd >/dev/null
+rm -rf "$rg_tmp"
+# Count occurrences: should see 2 file.py (one per repo) and 1 file.js (only repo2)
+py_count=$(echo "$output" | grep -c "file.py" || true)
+js_count=$(echo "$output" | grep -c "file.js" || true)
+if [[ "$py_count" -eq 2 ]] && [[ "$js_count" -eq 1 ]]; then
+    test_pass
+else
+    test_fail ".ripgreprc should apply independently per target (py:$py_count js:$js_count)"
+fi
+
 # ============================================================================
 # Summary
 # ============================================================================

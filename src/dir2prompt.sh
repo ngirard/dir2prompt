@@ -415,6 +415,9 @@ function process_target {
     git_root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)
     if [[ -n "$git_root" && -f "$git_root/.ripgreprc" ]]; then
         export RIPGREP_CONFIG_PATH="$git_root/.ripgreprc"
+    else
+        # Unset to avoid using config from previous target
+        unset RIPGREP_CONFIG_PATH
     fi
 
     # Handle ignore files based on new logic
