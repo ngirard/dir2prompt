@@ -2496,11 +2496,36 @@ function emit_manifest_for_target {
     printf 'Active Selection Layers:\n'
     local has_cli_rules=false
     local has_view=false
-    local has_promptignore=false
-    
+
+    local -a cli_add_rules=()
+    deserialize_serialized_list "${DIR2PROMPT_LAST_SELECTION_META[cli_add_rules]:-}" cli_add_rules
+    local -a cli_drop_rules=()
+    deserialize_serialized_list "${DIR2PROMPT_LAST_SELECTION_META[cli_drop_rules]:-}" cli_drop_rules
+    local -a cli_ignore_files=()
+    deserialize_serialized_list "${DIR2PROMPT_LAST_SELECTION_META[cli_ignore_files]:-}" cli_ignore_files
+
+    local -a cli_flags_messages=()
+    if [[ "${#cli_add_rules[@]}" -gt 0 ]]; then
+        has_cli_rules=true
+        cli_flags_messages+=("added ${#cli_add_rules[@]} rule(s)")
+    fi
+    if [[ "${#cli_drop_rules[@]}" -gt 0 ]]; then
+        has_cli_rules=true
+        cli_flags_messages+=("dropped ${#cli_drop_rules[@]} rule(s)")
+    fi
     if [[ "${#eph_files[@]}" -gt 0 ]]; then
         has_cli_rules=true
-        printf '  ✓ CLI flags: %d ephemeral rule file(s) applied\n' "${#eph_files[@]}"
+        cli_flags_messages+=("${#eph_files[@]} ephemeral rule file(s)")
+    fi
+    if [[ "${#cli_ignore_files[@]}" -gt 0 ]]; then
+        has_cli_rules=true
+        cli_flags_messages+=("${#cli_ignore_files[@]} custom ignore file(s)")
+    fi
+
+    if [[ "$has_cli_rules" == true ]]; then
+        local cli_summary
+        cli_summary=$(IFS=', '; echo "${cli_flags_messages[*]}")
+        printf '  ✓ CLI flags: %s applied\n' "$cli_summary"
     fi
     
     if [[ -n "$view" ]]; then
@@ -2514,9 +2539,18 @@ function emit_manifest_for_target {
         has_view=true
         printf '  ✓ Rules layer: %d rule(s) applied without a view\n' "${#manifest_rules[@]}"
     fi
+
+    local -a baseline_files=()
+    deserialize_serialized_list "${DIR2PROMPT_LAST_SELECTION_META[baseline_ignore_files]:-}" baseline_files
+    local ripgreprc_path="${DIR2PROMPT_LAST_SELECTION_META[ripgreprc_path]:-}"
     
-    # Note: we can't easily detect .promptignore or fd defaults from here,
-    # but we can note their potential presence
+    if [[ "${#baseline_files[@]}" -gt 0 ]]; then
+        printf '  ✓ .promptignore layer: %d file(s) active\n' "${#baseline_files[@]}"
+    fi
+    if [[ -n "$ripgreprc_path" ]]; then
+        printf '  ✓ .ripgreprc layer: active (%s)\n' "$ripgreprc_path"
+    fi
+    
     printf '  ✓ fd defaults: .gitignore, .ignore, .fdignore (always active)\n'
     printf '\n'
     
@@ -3357,7 +3391,7 @@ function parse_arguments {
                         PARSED_MANIFEST_MODE="$manifest_mode"
                         ;;
                     *)
-                        fatal "Unknown manifest mode '%s'. Supported modes: summary, full." "$manifest_mode"
+                        fatal "Unknown manifest mode '%s'. Supported modes: summary, full, llm." "$manifest_mode"
                         ;;
                 esac
                 ;;
