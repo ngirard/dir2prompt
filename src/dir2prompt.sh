@@ -55,15 +55,20 @@ function usage {
     File Selection Precedence (most specific to least specific):
       1. CLI flags (--ignore-file, --add-rule, --drop-rule, --add-rule-file)
       2. Selected view (--view NAME) or default view (if configured)
-      3. .promptignore file (in target directory or git root)
+      3. Baseline ignores: .promptignore (in target or git root) and .ripgreprc (at git root)
       4. fd's built-in ignores (.gitignore, .ignore, etc.)
       
       Note: CLI flags override view selections, enabling progressive refinement.
 
+    Implicit Configuration:
+      dir2prompt automatically respects a .ripgreprc file at the git repository
+      root. This can be used to set project-wide defaults like global ignores
+      (e.g., --glob '!.env') or to enable symlink following (--follow).
+
     Notes:
       - If no directory is specified, the current directory is used.
       - Cannot mix positional directories with --target mode.
-
+    
     Subcommands (for managing rules and views):
       rules init                   Initialize .dir2prompt with an example configuration.
                                    The best way to get started with rules and views.
