@@ -11,7 +11,7 @@ function usage {
 	Global Options:
 	  --contents-only        Display only the contents of non-binary files.
 	  --help                 Display this help message.
-      --manifest[=MODE]      Emit a manifest section (modes: summary, full).
+      --manifest[=MODE]      Emit a manifest section (modes: summary, full, llm).
       --output <FILE>        Write output to FILE instead of stdout.
 	  --tree-only            Display only the directory tree.
 	
@@ -259,24 +259,12 @@ PROGRAM=${0##*/}
 Maintainer="${MAINTAINER}"
 Version="v${VERSION} (${RELEASE_DATE})"
 
-DEPENDENCIES=('rg' 'tree' 'fd')
-
-# Error messages
-ERROR_MISSING_DEP="Required dependency '%s' not found. Please install it (note: some distributions package fd as 'fd-find') and try again."
-
-# Capture the directory where dir2prompt was invoked so we can resolve
-# user-provided paths (e.g., --ignore-file) before changing directories.
 ORIG_CWD=$(pwd)
 
-# ——————————
-# Logging
-
-# Logs a message to stderr.
 function log {
     printf '%s\n' "$1" >&2
 }
 
-# Logs an error message to stderr and exits the program with a status of 1.
 function fatal {
     if (( $# == 1 )); then
         printf '%s\n' "$1" >&2
@@ -287,8 +275,6 @@ function fatal {
     exit 1
 }
 
-# ——————————
-# Configuration state (Phase 2)
 LIST_SEPARATOR=$'\x1f'
 
 declare -gA DIR2PROMPT_CONFIG_CACHE=()
@@ -328,6 +314,45 @@ function strip_surrounding_quotes {
         fi
     fi
     printf '%s' "$value"
+}
+
+function humanize_list {
+    local -n list_ref="$1"
+    local count="${#list_ref[@]}"
+    if (( count == 0 )); then
+        printf ''
+        return
+    fi
+    if (( count == 1 )); then
+        printf '%s' "${list_ref[0]}"
+        return
+    fi
+    local result=""
+    local i
+    for ((i=0; i<count; i++)); do
+        local item="${list_ref[i]}"
+        if (( i == 0 )); then
+            result="$item"
+        elif (( i == count - 1 )); then
+            result+=" and $item"
+        else
+            result+=", $item"
+        fi
+    done
+    printf '%s' "$result"
+}
+
+function format_count_phrase {
+    local count="$1"
+    local noun="$2"
+    if [[ -z "$count" ]]; then
+        count=0
+    fi
+    if (( count == 1 )); then
+        printf '%s %s' "$count" "$noun"
+    else
+        printf '%s %ss' "$count" "$noun"
+    fi
 }
 
 function append_to_assoc_list {
@@ -433,6 +458,30 @@ function parse_gitignore_rule_file {
     done < "$rule_path"
 }
 
+
+function relativize_path_to_base {
+    local base="$1"
+    local candidate="$2"
+    if [[ -z "$candidate" ]]; then
+        printf ''
+        return
+    fi
+    if [[ -z "$base" ]]; then
+        printf '%s' "$candidate"
+        return
+    fi
+    local normalized_base="${base%/}"
+    local normalized_candidate="$candidate"
+    if [[ "$normalized_candidate" == "$normalized_base" ]]; then
+        printf '.'
+        return
+    fi
+    if [[ "$normalized_candidate" == "$normalized_base/"* ]]; then
+        printf '%s' "${normalized_candidate#${normalized_base}/}"
+        return
+    fi
+    printf '%s' "$candidate"
+}
 function parse_ripgreprc_file {
     local config_file="$1"
     local -n include_ref="$2"
@@ -924,22 +973,16 @@ function path_matches_any_regex {
     return 1
 }
 
-function enumerate_universe_with_fd {
+function _enumerate_true_universe {
     local dir="$1"
     local types_serialized="$2"
     local max_depth="$3"
     local max_filesize="$4"
-    local active_ignore_serialized="$5"
-    local follow_symlinks="$6"
+    local follow_symlinks="$5"
 
     local -a types_array=()
     if [[ -n "$types_serialized" ]]; then
         IFS='|' read -ra types_array <<< "$types_serialized"
-    fi
-
-    local -a active_ignore_files=()
-    if [[ -n "$active_ignore_serialized" ]]; then
-        IFS='|' read -ra active_ignore_files <<< "$active_ignore_serialized"
     fi
 
     (
@@ -964,14 +1007,48 @@ function enumerate_universe_with_fd {
                 fd_cmd+=("--extension" "$type")
             done
         fi
-        if [[ "${#active_ignore_files[@]}" -gt 0 ]]; then
-            local ignore_file
-            for ignore_file in "${active_ignore_files[@]}"; do
-                fd_cmd+=("--ignore-file" "$ignore_file")
-            done
-        fi
         "${fd_cmd[@]}" | LC_ALL=C sort
     )
+}
+
+function apply_pattern_filters {
+    local -n __out_ref="$1"
+    local -n __source_ref="$2"
+    local -n __include_patterns_ref="$3"
+    local -n __exclude_patterns_ref="$4"
+
+    local -a include_regexes=()
+    local include_required=false
+    if [[ "${#__include_patterns_ref[@]}" -gt 0 ]]; then
+        include_required=true
+        build_regex_array include_regexes "${__include_patterns_ref[@]}"
+    fi
+
+    local -a exclude_regexes=()
+    if [[ "${#__exclude_patterns_ref[@]}" -gt 0 ]]; then
+        build_regex_array exclude_regexes "${__exclude_patterns_ref[@]}"
+    fi
+
+    __out_ref=()
+    local path
+    for path in "${__source_ref[@]}"; do
+        local include_pass=true
+        if [[ "$include_required" == true ]]; then
+            include_pass=false
+            if path_matches_any_regex "$path" include_regexes; then
+                include_pass=true
+            fi
+        fi
+        if [[ "$include_pass" == false ]]; then
+            continue
+        fi
+        if [[ "${#exclude_regexes[@]}" -gt 0 ]]; then
+            if path_matches_any_regex "$path" exclude_regexes; then
+                continue
+            fi
+        fi
+        __out_ref+=("$path")
+    done
 }
 
 function build_final_selection {
@@ -992,6 +1069,7 @@ function build_final_selection {
     local ripgreprc_include_serialized="${13}"
     local ripgreprc_exclude_serialized="${14}"
     local ripgreprc_follow="${15}"
+    local ripgreprc_path="${16:-}"
 
     DIR2PROMPT_LAST_SELECTION_META=()
     local baseline_view=""
@@ -1126,22 +1204,12 @@ function build_final_selection {
         exclude_patterns+=("${eph_excludes[@]}")
     done
 
-    if [[ -n "$ripgreprc_include_serialized" ]]; then
-        local -a ripgreprc_includes=()
-        IFS='|' read -ra ripgreprc_includes <<< "$ripgreprc_include_serialized"
-        include_patterns+=("${ripgreprc_includes[@]}")
-    fi
-    if [[ -n "$ripgreprc_exclude_serialized" ]]; then
-        local -a ripgreprc_excludes=()
-        IFS='|' read -ra ripgreprc_excludes <<< "$ripgreprc_exclude_serialized"
-        exclude_patterns+=("${ripgreprc_excludes[@]}")
-    fi
+    # ripgreprc globs are applied during the baseline filter stage
 
     local manifest_enabled=false
     if [[ "${PARSED_MANIFEST_MODE:-off}" != "off" ]]; then
         manifest_enabled=true
     fi
-    DIR2PROMPT_LAST_SELECTION_META=()
 
     local effective_max_depth="$cli_max_depth"
     if [[ -z "$effective_max_depth" && -n "$view_max_depth" ]]; then
@@ -1174,77 +1242,90 @@ function build_final_selection {
             ;;
     esac
 
+    local -a active_ignore_array=()
+    if [[ -n "$active_ignore_serialized" ]]; then
+        IFS='|' read -ra active_ignore_array <<< "$active_ignore_serialized"
+    fi
+
+    local -a baseline_ignore_array=()
+    if [[ -n "$baseline_ignore_serialized" ]]; then
+        IFS='|' read -ra baseline_ignore_array <<< "$baseline_ignore_serialized"
+    fi
+
+    local -a cli_ignore_files=()
+    if [[ "${#active_ignore_array[@]}" -gt 0 ]]; then
+        local -A __dir2prompt_baseline_map=()
+        local baseline_file
+        for baseline_file in "${baseline_ignore_array[@]}"; do
+            __dir2prompt_baseline_map["$baseline_file"]=1
+        done
+        local ignore_candidate
+        for ignore_candidate in "${active_ignore_array[@]}"; do
+            if [[ -z "${__dir2prompt_baseline_map[$ignore_candidate]+x}" ]]; then
+                cli_ignore_files+=("$ignore_candidate")
+            fi
+        done
+        unset __dir2prompt_baseline_map
+    fi
+
+    local cli_ignore_file
+    for cli_ignore_file in "${cli_ignore_files[@]}"; do
+        if [[ -z "$cli_ignore_file" ]]; then
+            continue
+        fi
+        if [[ ! -f "$cli_ignore_file" ]]; then
+            fatal "Ignore file '%s' referenced via --ignore-file was not found" "$cli_ignore_file"
+        fi
+        local -a cli_includes=()
+        local -a cli_excludes=()
+        parse_gitignore_rule_file "$cli_ignore_file" cli_includes cli_excludes
+        include_patterns+=("${cli_includes[@]}")
+        exclude_patterns+=("${cli_excludes[@]}")
+    done
+
     local -a universe=()
-    mapfile -t universe < <(enumerate_universe_with_fd "$dir" "$types_serialized" "$effective_max_depth" "$effective_max_filesize" "$active_ignore_serialized" "$follow_flag")
+    mapfile -t universe < <(_enumerate_true_universe "$dir" "$types_serialized" "$effective_max_depth" "$effective_max_filesize" "$follow_flag")
 
-    local manifest_universe_count="${#universe[@]}"
-    if [[ "$manifest_enabled" == true && -n "$baseline_ignore_serialized" ]]; then
-        local -a active_ignore_array=()
-        local -a baseline_ignore_array=()
-        if [[ -n "$active_ignore_serialized" ]]; then
-            IFS='|' read -ra active_ignore_array <<< "$active_ignore_serialized"
-        fi
-        if [[ -n "$baseline_ignore_serialized" ]]; then
-            IFS='|' read -ra baseline_ignore_array <<< "$baseline_ignore_serialized"
-        fi
-        if [[ "${#baseline_ignore_array[@]}" -gt 0 ]]; then
-            local -A __dir2prompt_baseline_lookup=()
-            local ignore_path
-            for ignore_path in "${baseline_ignore_array[@]}"; do
-                __dir2prompt_baseline_lookup["$ignore_path"]=1
-            done
-            local -a non_baseline_ignores=()
-            if [[ "${#active_ignore_array[@]}" -gt 0 ]]; then
-                for ignore_path in "${active_ignore_array[@]}"; do
-                    if [[ -z "${__dir2prompt_baseline_lookup[$ignore_path]+x}" ]]; then
-                        non_baseline_ignores+=("$ignore_path")
-                    fi
-                done
-            fi
-            local manifest_ignore_serialized=""
-            if [[ "${#non_baseline_ignores[@]}" -gt 0 ]]; then
-                manifest_ignore_serialized=$(IFS='|'; echo "${non_baseline_ignores[*]}")
-            fi
-            local -a manifest_universe=()
-            mapfile -t manifest_universe < <(enumerate_universe_with_fd "$dir" "$types_serialized" "$effective_max_depth" "$effective_max_filesize" "$manifest_ignore_serialized" "$follow_flag")
-            manifest_universe_count="${#manifest_universe[@]}"
-            unset __dir2prompt_baseline_lookup
-        fi
+    local -a baseline_include_patterns=()
+    local -a baseline_exclude_patterns=()
+    local baseline_filters_active=false
+
+    local baseline_file
+    for baseline_file in "${baseline_ignore_array[@]}"; do
+        baseline_filters_active=true
+        local -a tmp_includes=()
+        local -a tmp_excludes=()
+        parse_gitignore_rule_file "$baseline_file" tmp_includes tmp_excludes
+        baseline_include_patterns+=("${tmp_includes[@]}")
+        baseline_exclude_patterns+=("${tmp_excludes[@]}")
+    done
+
+    if [[ -n "$ripgreprc_include_serialized" ]]; then
+        baseline_filters_active=true
+        local -a ripgreprc_includes=()
+        IFS='|' read -ra ripgreprc_includes <<< "$ripgreprc_include_serialized"
+        baseline_include_patterns+=("${ripgreprc_includes[@]}")
+    fi
+    if [[ -n "$ripgreprc_exclude_serialized" ]]; then
+        baseline_filters_active=true
+        local -a ripgreprc_excludes=()
+        IFS='|' read -ra ripgreprc_excludes <<< "$ripgreprc_exclude_serialized"
+        baseline_exclude_patterns+=("${ripgreprc_excludes[@]}")
     fi
 
-    local -a include_regexes=()
-    local include_required=false
-    if [[ "${#include_patterns[@]}" -gt 0 ]]; then
-        include_required=true
-        build_regex_array include_regexes "${include_patterns[@]}"
-    fi
-
-    local -a exclude_regexes=()
-    if [[ "${#exclude_patterns[@]}" -gt 0 ]]; then
-        build_regex_array exclude_regexes "${exclude_patterns[@]}"
+    local -a baseline_selection=()
+    if [[ "$baseline_filters_active" == true ]]; then
+        apply_pattern_filters baseline_selection universe baseline_include_patterns baseline_exclude_patterns
+    else
+        baseline_selection=("${universe[@]}")
     fi
 
     local -a selection_buffer=()
-    local path
-    for path in "${universe[@]}"; do
-        local matches_include=false
-        local matches_exclude=false
-        if [[ "$include_required" == true ]]; then
-            if path_matches_any_regex "$path" include_regexes; then
-                matches_include=true
-            fi
-        fi
-        if [[ "${#exclude_regexes[@]}" -gt 0 ]] && path_matches_any_regex "$path" exclude_regexes; then
-            matches_exclude=true
-        fi
-        local include_pass=true
-        if [[ "$include_required" == true ]]; then
-            include_pass=$matches_include
-        fi
-        if [[ "$include_pass" == true && "$matches_exclude" == false ]]; then
-            selection_buffer+=("$path")
-        fi
-    done
+    apply_pattern_filters selection_buffer baseline_selection include_patterns exclude_patterns
+
+    local true_count="${#universe[@]}"
+    local baseline_count="${#baseline_selection[@]}"
+    local final_count="${#selection_buffer[@]}"
 
     if [[ "$manifest_enabled" == true ]]; then
         local active_rules_serialized=""
@@ -1253,10 +1334,17 @@ function build_final_selection {
         ephemeral_serialized=$(serialize_array add_rule_files)
         local selection_serialized=""
         selection_serialized=$(serialize_array selection_buffer)
+        local baseline_serialized=""
+        baseline_serialized=$(serialize_array baseline_selection)
+        local baseline_files_serialized=""
+        baseline_files_serialized=$(serialize_array baseline_ignore_array)
+        local cli_ignore_serialized=""
+        cli_ignore_serialized=$(serialize_array cli_ignore_files)
 
         DIR2PROMPT_LAST_SELECTION_META["active_rules"]="$active_rules_serialized"
         DIR2PROMPT_LAST_SELECTION_META["ephemeral_rule_files"]="$ephemeral_serialized"
         DIR2PROMPT_LAST_SELECTION_META["selection_serialized"]="$selection_serialized"
+        DIR2PROMPT_LAST_SELECTION_META["baseline_selection_serialized"]="$baseline_serialized"
         DIR2PROMPT_LAST_SELECTION_META["view"]="$resolved_view"
         DIR2PROMPT_LAST_SELECTION_META["view_source"]="$view_source"
         DIR2PROMPT_LAST_SELECTION_META["baseline_view"]="$baseline_view"
@@ -1265,8 +1353,18 @@ function build_final_selection {
         DIR2PROMPT_LAST_SELECTION_META["max_filesize"]="$effective_max_filesize"
         DIR2PROMPT_LAST_SELECTION_META["symlinks"]="$follow_flag"
         DIR2PROMPT_LAST_SELECTION_META["config_dir"]="$config_dir"
-        DIR2PROMPT_LAST_SELECTION_META["universe_count"]="$manifest_universe_count"
-        DIR2PROMPT_LAST_SELECTION_META["selection_count"]="${#selection_buffer[@]}"
+        DIR2PROMPT_LAST_SELECTION_META["universe_count"]="$true_count"
+        DIR2PROMPT_LAST_SELECTION_META["true_universe_count"]="$true_count"
+        DIR2PROMPT_LAST_SELECTION_META["baseline_selection_count"]="$baseline_count"
+        DIR2PROMPT_LAST_SELECTION_META["selection_count"]="$final_count"
+        DIR2PROMPT_LAST_SELECTION_META["baseline_ignore_files"]="$baseline_files_serialized"
+        DIR2PROMPT_LAST_SELECTION_META["cli_ignore_files"]="$cli_ignore_serialized"
+        DIR2PROMPT_LAST_SELECTION_META["ripgreprc_include"]="$ripgreprc_include_serialized"
+        DIR2PROMPT_LAST_SELECTION_META["ripgreprc_exclude"]="$ripgreprc_exclude_serialized"
+        DIR2PROMPT_LAST_SELECTION_META["ripgreprc_path"]="$ripgreprc_path"
+        DIR2PROMPT_LAST_SELECTION_META["cli_add_rules"]="$add_rules_serialized"
+        DIR2PROMPT_LAST_SELECTION_META["cli_drop_rules"]="$drop_rules_serialized"
+        DIR2PROMPT_LAST_SELECTION_META["baseline_filters_active"]="$baseline_filters_active"
     fi
     if [[ "${#selection_buffer[@]}" -gt 0 ]]; then
         __selection_ref=("${selection_buffer[@]}")
@@ -1323,12 +1421,326 @@ function render_contents_from_selection {
     cd - >/dev/null || fatal "Failed to cd back to original directory"
 }
 
+function render_llm_manifest {
+    local dir="$1"
+    local target_name="$2"
+
+    local dir_abs
+    if ! dir_abs=$(cd "$dir" 2>/dev/null && pwd); then
+        dir_abs="$dir"
+    fi
+
+    local context_label="directory \`$dir\`"
+    if [[ -n "$target_name" ]]; then
+        context_label="target '$target_name' (\`$dir\`)"
+    fi
+
+    local config_dir="${DIR2PROMPT_LAST_SELECTION_META[config_dir]:-}"
+    local view="${DIR2PROMPT_LAST_SELECTION_META[view]:-}"
+    local view_source="${DIR2PROMPT_LAST_SELECTION_META[view_source]:-none}"
+    local view_desc=""
+    if [[ -n "$config_dir" && -n "$view" ]]; then
+        view_desc="${DIR2PROMPT_VIEW_DESCRIPTIONS["$config_dir::$view"]:-}"
+    fi
+
+    local true_count="${DIR2PROMPT_LAST_SELECTION_META[true_universe_count]:-${DIR2PROMPT_LAST_SELECTION_META[universe_count]:-0}}"
+    local baseline_count="${DIR2PROMPT_LAST_SELECTION_META[baseline_selection_count]:-$true_count}"
+    local final_count="${DIR2PROMPT_LAST_SELECTION_META[selection_count]:-0}"
+    local tc=$(( ${true_count:-0} ))
+    local bc=$(( ${baseline_count:-$tc} ))
+    local fc=$(( ${final_count:-0} ))
+    local baseline_removed=$(( tc - bc ))
+    if (( baseline_removed < 0 )); then
+        baseline_removed=0
+    fi
+
+    local -a baseline_files=()
+    deserialize_serialized_list "${DIR2PROMPT_LAST_SELECTION_META[baseline_ignore_files]:-}" baseline_files
+
+    local -a manifest_rules=()
+    deserialize_serialized_list "${DIR2PROMPT_LAST_SELECTION_META[active_rules]:-}" manifest_rules
+
+    local -a ephemeral_files=()
+    deserialize_serialized_list "${DIR2PROMPT_LAST_SELECTION_META[ephemeral_rule_files]:-}" ephemeral_files
+
+    local cli_add_rules_serialized="${DIR2PROMPT_LAST_SELECTION_META[cli_add_rules]:-}"
+    local -a cli_add_rules=()
+    if [[ -n "$cli_add_rules_serialized" ]]; then
+        IFS='|' read -ra cli_add_rules <<< "$cli_add_rules_serialized"
+    fi
+
+    local cli_drop_rules_serialized="${DIR2PROMPT_LAST_SELECTION_META[cli_drop_rules]:-}"
+    local -a cli_drop_rules=()
+    if [[ -n "$cli_drop_rules_serialized" ]]; then
+        IFS='|' read -ra cli_drop_rules <<< "$cli_drop_rules_serialized"
+    fi
+
+    local -a cli_ignore_files=()
+    deserialize_serialized_list "${DIR2PROMPT_LAST_SELECTION_META[cli_ignore_files]:-}" cli_ignore_files
+
+    local types_raw="${DIR2PROMPT_LAST_SELECTION_META[types]:-}"
+    local -a type_filters=()
+    if [[ -n "$types_raw" ]]; then
+        IFS='|' read -ra type_filters <<< "$types_raw"
+    fi
+    local max_depth="${DIR2PROMPT_LAST_SELECTION_META[max_depth]:-}"
+    local max_filesize="${DIR2PROMPT_LAST_SELECTION_META[max_filesize]:-}"
+
+    local ripgreprc_include="${DIR2PROMPT_LAST_SELECTION_META[ripgreprc_include]:-}"
+    local ripgreprc_exclude="${DIR2PROMPT_LAST_SELECTION_META[ripgreprc_exclude]:-}"
+    local ripgreprc_path="${DIR2PROMPT_LAST_SELECTION_META[ripgreprc_path]:-}"
+
+    local -a lines=()
+    lines+=("**Context Summary for ${context_label}**:")
+    lines+=("This snapshot was generated from a universe of $(format_count_phrase "$tc" "file").")
+
+    local -a baseline_sources=()
+    if (( ${#baseline_files[@]} > 0 )); then
+        local -a baseline_file_labels=()
+        local baseline_path
+        for baseline_path in "${baseline_files[@]}"; do
+            [[ -z "$baseline_path" ]] && continue
+            local pretty
+            pretty=$(relativize_path_to_base "$dir_abs" "$baseline_path")
+            baseline_file_labels+=("\`$pretty\`")
+        done
+        if (( ${#baseline_file_labels[@]} > 0 )); then
+            local files_text
+            files_text=$(humanize_list baseline_file_labels)
+            local descriptor="the baseline \`.promptignore\` file"
+            if (( ${#baseline_file_labels[@]} > 1 )); then
+                descriptor="the baseline \`.promptignore\` files"
+            fi
+            baseline_sources+=("$descriptor (${files_text})")
+        fi
+    fi
+    if [[ -n "$ripgreprc_include" || -n "$ripgreprc_exclude" ]]; then
+        local rip_desc="the repo-wide \`.ripgreprc\`"
+        if [[ -n "$ripgreprc_path" ]]; then
+            local rip_pretty
+            rip_pretty=$(relativize_path_to_base "$dir_abs" "$ripgreprc_path")
+            rip_desc+=" (\`$rip_pretty\`)"
+        fi
+        baseline_sources+=("$rip_desc")
+    fi
+
+    if (( baseline_removed > 0 )); then
+        local baseline_source_text="baseline filters"
+        if (( ${#baseline_sources[@]} > 0 )); then
+            baseline_source_text=$(humanize_list baseline_sources)
+        fi
+        lines+=("The ${baseline_source_text} removed $(format_count_phrase "$baseline_removed" "file"), leaving $(format_count_phrase "$bc" "file").")
+    fi
+
+    local -a refinement_clauses=()
+    local rule
+    local -a add_rule_labels=()
+    for rule in "${cli_add_rules[@]}"; do
+        [[ -z "$rule" ]] && continue
+        add_rule_labels+=("\`$rule\`")
+    done
+    if (( ${#add_rule_labels[@]} > 0 )); then
+        local add_text
+        add_text=$(humanize_list add_rule_labels)
+        refinement_clauses+=("adding $(format_count_phrase ${#add_rule_labels[@]} "named rule") (${add_text})")
+    fi
+
+    local -a drop_rule_labels=()
+    for rule in "${cli_drop_rules[@]}"; do
+        [[ -z "$rule" ]] && continue
+        drop_rule_labels+=("\`$rule\`")
+    done
+    if (( ${#drop_rule_labels[@]} > 0 )); then
+        local drop_text
+        drop_text=$(humanize_list drop_rule_labels)
+        refinement_clauses+=("dropping $(format_count_phrase ${#drop_rule_labels[@]} "named rule") (${drop_text})")
+    fi
+
+    local -a eph_labels=()
+    local eph_file
+    for eph_file in "${ephemeral_files[@]}"; do
+        [[ -z "$eph_file" ]] && continue
+        local eph_pretty
+        eph_pretty=$(relativize_path_to_base "$dir_abs" "$eph_file")
+        eph_labels+=("\`$eph_pretty\`")
+    done
+    if (( ${#eph_labels[@]} > 0 )); then
+        local eph_text
+        eph_text=$(humanize_list eph_labels)
+        refinement_clauses+=("layering $(format_count_phrase ${#eph_labels[@]} "ephemeral rule file") (${eph_text})")
+    fi
+
+    local -a cli_ignore_labels=()
+    local ignore_file
+    for ignore_file in "${cli_ignore_files[@]}"; do
+        [[ -z "$ignore_file" ]] && continue
+        local ignore_pretty
+        ignore_pretty=$(relativize_path_to_base "$dir_abs" "$ignore_file")
+        cli_ignore_labels+=("\`$ignore_pretty\`")
+    done
+    if (( ${#cli_ignore_labels[@]} > 0 )); then
+        local ignore_text
+        ignore_text=$(humanize_list cli_ignore_labels)
+        refinement_clauses+=("applying $(format_count_phrase ${#cli_ignore_labels[@]} "custom ignore file") (${ignore_text})")
+    fi
+
+    local -a constraint_clauses=()
+    if (( ${#type_filters[@]} > 0 )); then
+        local -a type_labels=()
+        local type
+        for type in "${type_filters[@]}"; do
+            [[ -z "$type" ]] && continue
+            type_labels+=("\`$type\`")
+        done
+        if (( ${#type_labels[@]} > 0 )); then
+            local type_text
+            type_text=$(humanize_list type_labels)
+            constraint_clauses+=("enforcing the file type filter ${type_text}")
+        fi
+    fi
+    if [[ -n "$max_depth" ]]; then
+        constraint_clauses+=("limiting traversal depth to \`$max_depth\`")
+    fi
+    if [[ -n "$max_filesize" ]]; then
+        constraint_clauses+=("capping file size at \`$max_filesize\`")
+    fi
+
+    local final_selection_sentence_written=false
+    if (( baseline_removed == 0 )) && [[ -z "$view" ]] && (( ${#manifest_rules[@]} == 0 )) && (( ${#refinement_clauses[@]} == 0 )) && (( ${#constraint_clauses[@]} == 0 )); then
+        lines+=("No filters were applied, resulting in $(format_count_phrase "$fc" "file").")
+        final_selection_sentence_written=true
+    fi
+
+    local has_view_section=false
+    if [[ -n "$view" ]]; then
+        has_view_section=true
+    elif (( ${#manifest_rules[@]} > 0 )); then
+        has_view_section=true
+    fi
+    local has_cli_overrides=false
+    if (( ${#refinement_clauses[@]} > 0 )); then
+        has_cli_overrides=true
+    fi
+    local has_constraints=false
+    if (( ${#constraint_clauses[@]} > 0 )); then
+        has_constraints=true
+    fi
+
+    if [[ "$has_view_section" == true || "$has_cli_overrides" == true || "$has_constraints" == true ]]; then
+        lines+=("")
+    fi
+
+    if [[ -n "$view" ]]; then
+        local view_sentence="The selection was guided by the '$view' view"
+        if [[ -n "$view_desc" ]]; then
+            view_sentence+=" (${view_desc})"
+        fi
+        case "$view_source" in
+            cli)
+                view_sentence+=" specified on the command line"
+                ;;
+            baseline)
+                view_sentence+=" configured as the default view"
+                ;;
+        esac
+        if (( ${#manifest_rules[@]} > 0 )); then
+            local -a rule_labels=()
+            for rule in "${manifest_rules[@]}"; do
+                [[ -z "$rule" ]] && continue
+                rule_labels+=("\`$rule\`")
+            done
+            if (( ${#rule_labels[@]} > 0 )); then
+                local rules_text
+                rules_text=$(humanize_list rule_labels)
+                view_sentence+=" combining $(format_count_phrase ${#rule_labels[@]} "rule") (${rules_text})"
+            fi
+        fi
+        view_sentence+="."
+        lines+=("$view_sentence")
+    elif (( ${#manifest_rules[@]} > 0 )); then
+        local -a rule_labels=()
+        for rule in "${manifest_rules[@]}"; do
+            [[ -z "$rule" ]] && continue
+            rule_labels+=("\`$rule\`")
+        done
+        if (( ${#rule_labels[@]} > 0 )); then
+            local rules_text
+            rules_text=$(humanize_list rule_labels)
+            lines+=("Named rules (${rules_text}) were applied without an explicit view.")
+        fi
+    fi
+
+    if (( ${#refinement_clauses[@]} > 0 )); then
+        local refinement_text
+        refinement_text=$(humanize_list refinement_clauses)
+        lines+=("The selection was progressively refined by ${refinement_text}.")
+    fi
+
+    if (( ${#constraint_clauses[@]} > 0 )); then
+        local constraint_text
+        constraint_text=$(humanize_list constraint_clauses)
+        local constraint_intro="Command-line constraints"
+        if (( ${#refinement_clauses[@]} > 0 )); then
+            constraint_intro="Additional CLI constraints"
+        fi
+        lines+=("${constraint_intro} applied ${constraint_text}.")
+    fi
+
+    local has_baseline_diff=false
+    if (( baseline_removed > 0 )); then
+        has_baseline_diff=true
+    fi
+    local targeted_filters_active=false
+    if [[ -n "$view" ]]; then
+        targeted_filters_active=true
+    elif (( ${#manifest_rules[@]} > 0 )); then
+        targeted_filters_active=true
+    fi
+    if [[ "$has_constraints" == true ]]; then
+        targeted_filters_active=true
+    fi
+
+    if [[ "$final_selection_sentence_written" == false ]]; then
+        lines+=("This resulted in a final selection of $(format_count_phrase "$fc" "file").")
+        final_selection_sentence_written=true
+    fi
+
+    local qualitative_scope="a broad overview"
+    if (( fc == tc )) && [[ "$has_baseline_diff" == false ]] && [[ "$has_cli_overrides" == false ]] && [[ "$targeted_filters_active" == false ]]; then
+        qualitative_scope="a complete and unfiltered view"
+    elif [[ "$has_cli_overrides" == true ]]; then
+        qualitative_scope="a custom-defined context"
+    elif [[ "$targeted_filters_active" == true ]]; then
+        qualitative_scope="a focused slice"
+    elif [[ "$has_baseline_diff" == true ]]; then
+        qualitative_scope="a broad overview"
+    fi
+
+    lines+=("The following context represents ${qualitative_scope} of the repository.")
+
+    local line
+    for line in "${lines[@]}"; do
+        if [[ -z "$line" ]]; then
+            printf '>'
+        else
+            printf '> %s' "$line"
+        fi
+        printf '\n'
+    done
+    printf '\n'
+}
+
 function emit_manifest_for_target {
     local dir="$1"
     local target_name="$2"
     local config_dir="$3"
 
     if [[ "${PARSED_MANIFEST_MODE:-off}" == "off" ]]; then
+        return
+    fi
+
+    if [[ "${PARSED_MANIFEST_MODE:-off}" == "llm" ]]; then
+        render_llm_manifest "$dir" "$target_name"
         return
     fi
 
@@ -2297,7 +2709,7 @@ function parse_arguments {
                     manifest_mode="summary"
                 fi
                 case "$manifest_mode" in
-                    summary|full)
+                    summary|full|llm)
                         PARSED_MANIFEST_MODE="$manifest_mode"
                         ;;
                     *)
@@ -2746,12 +3158,15 @@ function process_target {
     local ripgreprc_follow="inherit"
     local -a ripgreprc_include_globs=()
     local -a ripgreprc_exclude_globs=()
+    local ripgreprc_path=""
     if [[ -n "$git_root" && -f "$git_root/.ripgreprc" ]]; then
         export RIPGREP_CONFIG_PATH="$git_root/.ripgreprc"
+        ripgreprc_path="$git_root/.ripgreprc"
         parse_ripgreprc_file "$git_root/.ripgreprc" ripgreprc_include_globs ripgreprc_exclude_globs ripgreprc_follow
     else
         # Unset to avoid using config from previous target
         unset RIPGREP_CONFIG_PATH
+        ripgreprc_path=""
     fi
 
     local ripgreprc_include_serialized=""
@@ -2803,7 +3218,7 @@ function process_target {
 
     if [[ "$FINDER_BACKEND" == "fd" ]]; then
     local -a final_selection=()
-    build_final_selection final_selection "$dir" "$types_serialized" "$max_depth" "$max_filesize" "$active_ignore_serialized" "$baseline_ignore_serialized" "$config_dir" "$view_name" "$add_rules_serialized" "$drop_rules_serialized" "$add_rule_files_serialized" "$symlink_behavior" "$ripgreprc_include_serialized" "$ripgreprc_exclude_serialized" "$ripgreprc_follow"
+    build_final_selection final_selection "$dir" "$types_serialized" "$max_depth" "$max_filesize" "$active_ignore_serialized" "$baseline_ignore_serialized" "$config_dir" "$view_name" "$add_rules_serialized" "$drop_rules_serialized" "$add_rule_files_serialized" "$symlink_behavior" "$ripgreprc_include_serialized" "$ripgreprc_exclude_serialized" "$ripgreprc_follow" "$ripgreprc_path"
         if [[ "${PARSED_MANIFEST_MODE:-off}" != "off" ]]; then
             emit_manifest_for_target "$dir" "$target_name" "$config_dir"
         fi

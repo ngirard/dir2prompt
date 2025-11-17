@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Multi target cli support.
-- `--manifest`.
+- `--manifest` / `--manifest=full` / `--manifest=llm`.
 - Rules and views.
 - New files selection system using `fd` instead of `rg` for discovery.
 

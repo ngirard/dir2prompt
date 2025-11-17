@@ -64,7 +64,7 @@ Usage: dir2prompt [OPTIONS] [DIRECTORY...]
 Global Options:
   --contents-only        Display only the contents of non-binary files.
   --help                 Display this help message.
-   --manifest[=MODE]      Emit a manifest before the snapshot (summary|full).
+  --manifest[=MODE]      Emit a manifest before the snapshot (summary|full|llm).
   --output <FILE>        Write output to FILE instead of stdout.
   --tree-only            Display only the directory tree.
 
