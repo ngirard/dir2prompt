@@ -6,7 +6,7 @@ function usage {
     cat <<-EoN
     Usage: ${PROGRAM} [OPTIONS] [DIRECTORY...]
            ${PROGRAM} [GLOBAL_OPTIONS] --target NAME --dir PATH [TARGET_OPTIONS]...
-           ${PROGRAM} rules <add|list|show> [...]
+           ${PROGRAM} rules <add|list|show|init> [...]
 	
 	Global Options:
 	  --contents-only        Display only the contents of non-binary files.
@@ -37,16 +37,218 @@ function usage {
 	  Each target can have its own configuration.
 	  Global target options before the first --target become defaults.
 	
+    Key Concepts:
+      RULE: A named set of gitignore-style patterns (include/exclude) stored in 
+            .dir2prompt/rules/<name>.ignore. Rules are reusable building blocks.
+            
+      VIEW: A named combination of multiple rules that creates a specific repository
+            snapshot perspective (e.g., 'docs-only', 'backend-logic', 'full-context').
+            Views are defined in .dir2prompt/views.yml.
+    
+    File Selection Precedence (most specific to least specific):
+      1. CLI flags (--ignore-file, --add-rule, --drop-rule, --add-rule-file)
+      2. Selected view (--view NAME) or default view (if configured)
+      3. .promptignore file (in target directory or git root)
+      4. fd's built-in ignores (.gitignore, .ignore, etc.)
+      
+      Note: CLI flags override view selections, enabling progressive refinement.
+
     Notes:
       - If no directory is specified, the current directory is used.
       - Cannot mix positional directories with --target mode.
+      - Use '${PROGRAM} rules init' to bootstrap configuration for your first time.
 
     Subcommands:
       rules add <RULE> [OPTIONS]   Create or update .dir2prompt rules and optional views.
       rules list                   Show a summary of configured rules and views.
       rules show <RULE>            Display the gitignore patterns for a rule.
+      rules init                   Initialize .dir2prompt configuration with examples.
+      
+    Use '${PROGRAM} rules --help' for detailed information about the rules subcommand.
 EoN
 } # End of function usage
+
+# Help for the rules subcommand
+function rules_usage {
+    cat <<-'EoN'
+	Usage: dir2prompt rules <SUBCOMMAND> [OPTIONS]
+	
+	The rules system allows you to create reusable, composable file selection profiles
+	for your repository snapshots. This is more powerful and maintainable than ad-hoc
+	filtering with --ignore-file or --type flags.
+	
+	Key Concepts:
+	  RULE  - A named set of gitignore-style patterns (include/exclude) stored in 
+	          .dir2prompt/rules/<name>.ignore. Rules are the building blocks.
+	          
+	  VIEW  - A named combination of multiple rules that creates a specific snapshot
+	          perspective (e.g., 'docs-only', 'backend-logic', 'full-context').
+	          Views are defined in .dir2prompt/views.yml.
+	
+	Configuration Location:
+	  All configuration lives in .dir2prompt/ at your project root:
+	    .dir2prompt/views.yml           - Defines views and their rule combinations
+	    .dir2prompt/rules/*.ignore      - Individual rule files (gitignore syntax)
+	
+	Subcommands:
+	  init                Initialize .dir2prompt with a working example configuration
+	  add <RULE>          Create or update a rule (and optionally attach to a view)
+	  list                Display all configured rules and views
+	  show <RULE>         Print the gitignore patterns for a specific rule
+	
+	Selection Precedence (most specific to least specific):
+	  1. CLI flags (--ignore-file, --add-rule, --drop-rule, --add-rule-file)
+	  2. Selected view (--view) or default view
+	  3. .promptignore file (in target directory or git root)
+	  4. fd's built-in ignores (.gitignore, .ignore, etc.)
+	
+	Examples:
+	  # Start with a baseline configuration
+	  dir2prompt rules init
+	  
+	  # Create a rule from your .gitignore and add to a 'default' view
+	  dir2prompt rules add baseline --from-file .gitignore --view default
+	  
+	  # Create a docs-focused view
+	  dir2prompt rules add docs-only --view docs --description "Documentation files only"
+	  echo '!*.md' | dir2prompt rules add docs-include --view docs
+	  
+	  # Use a view to generate a snapshot
+	  dir2prompt --view docs
+	  
+	  # Temporarily layer additional rules on top of a view
+	  dir2prompt --view default --add-rule extra-excludes
+	
+	For detailed help on each subcommand:
+	  dir2prompt rules add --help
+	  dir2prompt rules list --help
+	  dir2prompt rules show --help
+	  dir2prompt rules init --help
+EoN
+}
+
+# Help for rules add
+function rules_add_usage {
+    cat <<-'EoN'
+	Usage: dir2prompt rules add <RULE_NAME> [OPTIONS]
+	
+	Create or update a rule file with gitignore-style patterns. Rules can be used
+	independently or composed into views for reusable snapshot configurations.
+	
+	Arguments:
+	  RULE_NAME              Name for the rule (alphanumeric, hyphens, underscores)
+	
+	Options:
+	  --description <TEXT>   Human-readable description of the rule's purpose
+	  --from-file <PATH>     Read patterns from a file instead of stdin
+	  --view <VIEW_NAME>     Add this rule to the specified view (creates view if new)
+	  --base-view <BASE>     When creating a view, inherit rules from BASE view first
+	                         (requires --view)
+	
+	Input:
+	  Patterns are gitignore-style:
+	    pattern        - Exclude files matching pattern
+	    !pattern       - Include (negate previous exclusions)
+	    /pattern       - Match only at root level
+	    dir/           - Match directories
+	    *.ext          - Match by extension
+	    **/pattern     - Match at any depth
+	
+	  If --from-file is provided, patterns are read from that file.
+	  Otherwise, patterns are read from stdin until EOF.
+	
+	Output:
+	  The rule is written to .dir2prompt/rules/<RULE_NAME>.ignore
+	  If --view is specified, .dir2prompt/views.yml is updated.
+	
+	Examples:
+	  # Create rule from existing .gitignore
+	  dir2prompt rules add baseline --from-file .gitignore --description "Standard ignores"
+	  
+	  # Create rule from stdin
+	  echo -e '*.log\n*.tmp\nbuild/' | dir2prompt rules add temp-files
+	  
+	  # Create rule and add to a view
+	  dir2prompt rules add docs-only --view documentation --description "Docs snapshot"
+	  
+	  # Create a view that extends another
+	  dir2prompt rules add extra --view extended --base-view default --description "Default + extra"
+	  
+	  # Update existing rule (preserves description unless --description given)
+	  cat new-patterns.txt | dir2prompt rules add baseline
+EoN
+}
+
+# Help for rules list
+function rules_list_usage {
+    cat <<-'EoN'
+	Usage: dir2prompt rules list
+	
+	Display a summary of all configured rules and views in the current repository.
+	
+	Output includes:
+	  - All defined rules with their file paths and descriptions
+	  - All defined views with their descriptions and associated rules
+	
+	If no configuration exists, guidance is provided on how to create your first rule.
+	
+	Examples:
+	  dir2prompt rules list
+EoN
+}
+
+# Help for rules show
+function rules_show_usage {
+    cat <<-'EoN'
+	Usage: dir2prompt rules show <RULE_NAME>
+	
+	Display the gitignore-style patterns contained in a specific rule.
+	
+	Arguments:
+	  RULE_NAME              Name of the rule to display
+	
+	Output:
+	  Prints the rule name, file path, and complete contents of the rule file.
+	
+	Examples:
+	  dir2prompt rules show baseline
+	  dir2prompt rules show docs-only
+EoN
+}
+
+# Help for rules init
+function rules_init_usage {
+    cat <<-'EoN'
+	Usage: dir2prompt rules init [OPTIONS]
+	
+	Initialize a .dir2prompt configuration directory with example rules and views.
+	This provides a working starting point for creating tailored repository snapshots.
+	
+	Options:
+	  --from-gitignore       Create baseline rule from .gitignore (if present)
+	  --minimal              Create minimal configuration (no example rules)
+	
+	What gets created:
+	  .dir2prompt/                    - Configuration directory
+	  .dir2prompt/views.yml           - View definitions file
+	  .dir2prompt/rules/baseline.ignore - Example baseline rule
+	
+	If --from-gitignore is specified and .gitignore exists, the baseline rule will
+	be populated with your existing .gitignore patterns. Otherwise, sensible defaults
+	are provided.
+	
+	Examples:
+	  # Initialize with example configuration
+	  dir2prompt rules init
+	  
+	  # Initialize using existing .gitignore
+	  dir2prompt rules init --from-gitignore
+	  
+	  # Create minimal configuration
+	  dir2prompt rules init --minimal
+EoN
+}
+
 
 # Unofficial bash Strict Mode?
 set -euo pipefail
@@ -1086,6 +1288,17 @@ function emit_manifest_for_target {
     printf '### Manifest for %s\n' "$display"
     printf 'Manifest mode: %s\n' "$PARSED_MANIFEST_MODE"
     printf 'Target directory: %s\n' "$dir"
+    
+    # Add precedence explanation
+    printf '\n'
+    printf '# Selection Precedence (highest to lowest):\n'
+    printf '# 1. CLI flags: --ignore-file, --add-rule, --drop-rule, --add-rule-file\n'
+    printf '# 2. View selection: --view or default view (from .dir2prompt/views.yml)\n'
+    printf '# 3. .promptignore: in target directory or git root\n'
+    printf '# 4. fd defaults: .gitignore, .ignore, .fdignore, etc.\n'
+    printf '#\n'
+    printf '# Higher layers override lower layers. CLI flags enable progressive refinement.\n'
+    printf '\n'
 
     local view="${DIR2PROMPT_LAST_SELECTION_META[view]:-}"
     local view_source="${DIR2PROMPT_LAST_SELECTION_META[view_source]:-none}"
@@ -1169,6 +1382,40 @@ function emit_manifest_for_target {
     printf 'Counts:\n'
     printf '  - Universe: %s\n' "$universe_count"
     printf '  - Selection: %s\n' "$selection_count"
+    
+    # Add active layers explanation
+    printf '\n'
+    printf 'Active Selection Layers:\n'
+    local has_cli_rules=false
+    local has_view=false
+    local has_promptignore=false
+    
+    if [[ "${#eph_files[@]}" -gt 0 ]]; then
+        has_cli_rules=true
+        printf '  ✓ CLI flags: %d ephemeral rule file(s) applied\n' "${#eph_files[@]}"
+    fi
+    
+    if [[ -n "$view" ]]; then
+        has_view=true
+        if [[ "${#manifest_rules[@]}" -gt 0 ]]; then
+            printf '  ✓ View layer: "%s" with %d rule(s) applied\n' "$view" "${#manifest_rules[@]}"
+        else
+            printf '  ✓ View layer: "%s" (no rules configured)\n' "$view"
+        fi
+    elif [[ "${#manifest_rules[@]}" -gt 0 ]]; then
+        has_view=true
+        printf '  ✓ Rules layer: %d rule(s) applied without a view\n' "${#manifest_rules[@]}"
+    fi
+    
+    # Note: we can't easily detect .promptignore or fd defaults from here,
+    # but we can note their potential presence
+    printf '  ✓ fd defaults: .gitignore, .ignore, .fdignore (always active)\n'
+    printf '\n'
+    
+    if [[ "$has_cli_rules" == true && "$has_view" == true ]]; then
+        printf 'Note: CLI flags override view selections (progressive refinement active)\n'
+        printf '\n'
+    fi
 
     if [[ "$PARSED_MANIFEST_MODE" == "full" ]]; then
         local selection_serialized="${DIR2PROMPT_LAST_SELECTION_META[selection_serialized]:-}"
@@ -1339,6 +1586,10 @@ function rules_subcommand_add {
     if [[ $# -lt 1 ]]; then
         fatal "'dir2prompt rules add' requires a rule name"
     fi
+    if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+        rules_add_usage
+        exit 0
+    fi
     local rule_name="$1"
     shift
     ensure_identifier_valid "Rule" "$rule_name"
@@ -1499,20 +1750,60 @@ function rules_subcommand_add {
 }
 
 function rules_subcommand_list {
-    if [[ $# -ne 0 ]]; then
+    if [[ $# -gt 0 ]]; then
+        if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+            rules_list_usage
+            exit 0
+        fi
         fatal "'dir2prompt rules list' does not take additional arguments"
     fi
     local config_dir
     config_dir=$(resolve_rules_config_dir)
     if [[ ! -d "$config_dir" ]]; then
-        printf "No rules configured yet. Use '%s rules add <name>' to create one.\n" "$PROGRAM"
+        cat <<-EoN
+	No rules or views configured for this repository.
+	
+	The rules and views system allows you to create reusable, semantic file
+	selection profiles instead of manually filtering with --ignore-file each time.
+	
+	Getting started:
+	
+	  1. Initialize with example configuration:
+	     $PROGRAM rules init
+	     
+	     This creates a working .dir2prompt directory with a 'default' view.
+	  
+	  2. Or create your first rule manually:
+	     $PROGRAM rules add baseline --from-file .gitignore --view default \\
+	       --description "Standard project ignores"
+	     
+	     This creates a 'default' view using your existing .gitignore patterns.
+	  
+	  3. Use your view to generate a snapshot:
+	     $PROGRAM --view default
+	     
+	     Or just: $PROGRAM  (uses 'default' view if it exists)
+	
+	Learn more:
+	  $PROGRAM rules --help        # Detailed documentation on rules and views
+	  $PROGRAM --help              # See how views integrate with CLI options
+EoN
         return
     fi
     local project_root
     project_root=$(cd "$config_dir/.." && pwd)
     local views_file
     if ! views_file=$(dir2prompt_find_views_file "$config_dir" 2>/dev/null); then
-        printf "No rules configured yet. Use '%s rules add <name>' to create one.\n" "$PROGRAM"
+        cat <<-EoN
+	Configuration directory exists but no views.yml found.
+	
+	Create your first rule to generate a views.yml file:
+	  $PROGRAM rules add baseline --from-file .gitignore --view default \\
+	    --description "Standard project ignores"
+	
+	Or initialize with examples:
+	  $PROGRAM rules init
+EoN
         return
     fi
     parse_views_yaml_file "$config_dir" "$views_file" "$project_root"
@@ -1564,6 +1855,13 @@ function rules_subcommand_list {
 }
 
 function rules_subcommand_show {
+    if [[ $# -lt 1 ]]; then
+        fatal "'dir2prompt rules show' requires exactly one rule name"
+    fi
+    if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+        rules_show_usage
+        exit 0
+    fi
     if [[ $# -ne 1 ]]; then
         fatal "'dir2prompt rules show' requires exactly one rule name"
     fi
@@ -1597,12 +1895,161 @@ function rules_subcommand_show {
     printf '\n'
 }
 
+function rules_subcommand_init {
+    local from_gitignore=false
+    local minimal=false
+    
+    while (( $# > 0 )); do
+        case "$1" in
+            --help|-h)
+                rules_init_usage
+                exit 0
+                ;;
+            --from-gitignore)
+                from_gitignore=true
+                shift
+                ;;
+            --minimal)
+                minimal=true
+                shift
+                ;;
+            *)
+                fatal "Unknown option '%s' for 'dir2prompt rules init'" "$1"
+                ;;
+        esac
+    done
+    
+    local config_dir
+    config_dir=$(resolve_rules_config_dir)
+    
+    # Check if already initialized
+    if [[ -d "$config_dir" ]] && [[ -f "$config_dir/views.yml" || -f "$config_dir/views.yaml" ]]; then
+        log "Configuration already exists at $config_dir"
+        log "To reinitialize, remove the .dir2prompt directory first."
+        return 1
+    fi
+    
+    # Create directory structure
+    mkdir -p "$config_dir/rules"
+    local project_root
+    project_root=$(cd "$config_dir/.." && pwd)
+    
+    log "Initializing .dir2prompt configuration in $project_root"
+    
+    if [[ "$minimal" == true ]]; then
+        # Create minimal configuration
+        cat > "$config_dir/views.yml" <<'EOF'
+rules: {}
+
+views: {}
+EOF
+        log "Created minimal configuration at .dir2prompt/views.yml"
+        log ""
+        log "Next steps:"
+        log "  1. Create your first rule:"
+        log "     dir2prompt rules add baseline --description 'Standard ignores'"
+        log ""
+        log "  2. Add the rule to a view:"
+        log "     dir2prompt rules add baseline --view default"
+        log ""
+        log "  3. Use the view:"
+        log "     dir2prompt --view default"
+        return 0
+    fi
+    
+    # Create baseline rule
+    local baseline_content
+    if [[ "$from_gitignore" == true ]] && [[ -f "$project_root/.gitignore" ]]; then
+        baseline_content=$(cat "$project_root/.gitignore")
+        log "Using existing .gitignore for baseline rule"
+    else
+        # Provide sensible defaults
+        baseline_content='# Common build and dependency directories
+node_modules/
+dist/
+build/
+target/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.tox/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment and secrets
+.env
+.env.local
+*.key
+*.pem
+
+# Logs and temporary files
+*.log
+*.tmp
+.cache/
+
+# Version control
+.git/
+.svn/
+'
+        log "Creating baseline rule with common ignore patterns"
+    fi
+    
+    # Write baseline rule file
+    printf '%s\n' "$baseline_content" > "$config_dir/rules/baseline.ignore"
+    
+    # Create views.yml with example configuration
+    cat > "$config_dir/views.yml" <<'EOF'
+rules:
+  baseline:
+    description: Standard ignore patterns for common build artifacts and IDE files
+    file: .dir2prompt/rules/baseline.ignore
+
+views:
+  default:
+    description: Default view with baseline ignores
+    rules:
+      - baseline
+EOF
+    
+    log "Created configuration files:"
+    log "  - .dir2prompt/views.yml (configuration file)"
+    log "  - .dir2prompt/rules/baseline.ignore (baseline ignore patterns)"
+    log ""
+    log "Your repository is now configured with a 'default' view."
+    log ""
+    log "Try it out:"
+    log "  dir2prompt                    # Uses 'default' view automatically"
+    log "  dir2prompt --view default     # Explicitly select the default view"
+    log "  dir2prompt --manifest         # See what rules are active"
+    log ""
+    log "Customize your configuration:"
+    log "  dir2prompt rules list         # Show all rules and views"
+    log "  dir2prompt rules show baseline # Display baseline rule patterns"
+    log "  dir2prompt rules add <name>   # Create additional rules"
+    log ""
+    log "Learn more:"
+    log "  dir2prompt rules --help       # Detailed rules documentation"
+}
+
 function handle_rules_subcommand {
     if [[ $# -eq 0 ]]; then
-        fatal "Missing rules subcommand. Use 'add', 'list', or 'show'."
+        fatal "Missing rules subcommand. Use 'add', 'list', 'show', or 'init'."
     fi
     local subcommand="$1"
     shift
+    
+    # Handle --help for the rules subcommand itself
+    if [[ "$subcommand" == "--help" || "$subcommand" == "-h" ]]; then
+        rules_usage
+        exit 0
+    fi
+    
     case "$subcommand" in
         add)
             rules_subcommand_add "$@"
@@ -1613,8 +2060,11 @@ function handle_rules_subcommand {
         show)
             rules_subcommand_show "$@"
             ;;
+        init)
+            rules_subcommand_init "$@"
+            ;;
         *)
-            fatal "Unknown rules subcommand '%s'. Expected add, list, or show." "$subcommand"
+            fatal "Unknown rules subcommand '%s'. Expected add, list, show, or init." "$subcommand"
             ;;
     esac
 }
