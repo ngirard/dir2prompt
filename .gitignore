@@ -1,3 +1,4 @@
 /build
 /prompts
 devel
+*.code-workspace
