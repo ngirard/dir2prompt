@@ -53,53 +53,134 @@ Binary packages built with nfpm follow the same convention and place the script 
 
 ## Usage
 
+### Basic Usage
+
 ```
-Usage: dir2prompt [OPTIONS] [DIRECTORY]
-Options:
-  --tree-only          Display only the directory tree.
-  --contents-only      Display only the contents of non-binary files.
-  --type <TYPE>        Limit search to files matching the given type.
-  --max-depth <NUM>    Limit the depth of directory traversal.
-  --max-filesize <NUM> Ignore files larger than NUM in size.
-  --ignore-file <FILE> Specify one or more custom ignore files (repeatable).
-                       Relative paths are resolved from the directory where you run dir2prompt.
-  --help               Display this help message.
+Usage: dir2prompt [OPTIONS] [DIRECTORY...]
+       dir2prompt [GLOBAL_OPTIONS] --target NAME --dir PATH [TARGET_OPTIONS]...
+
+Global Options:
+  --contents-only        Display only the contents of non-binary files.
+  --help                 Display this help message.
+  --output <FILE>        Write output to FILE instead of stdout.
+  --tree-only            Display only the directory tree.
+
+Target Options (can be global defaults or per-target):
+  --ignore-file <FILE>   Repeatable. Use custom ignore file(s) and skip automatic .promptignore detection.
+                         Relative paths are resolved from the directory where dir2prompt is invoked.
+  --max-depth <NUM>      Limit the depth of directory traversal.
+  --max-filesize <NUM>   Ignore files larger than NUM in size.
+  --type <TYPE>          Limit search to files matching the given type.
 
 If no directory is specified, the current directory is used.
 ```
 
+### Multi-Directory Support
+
+`dir2prompt` supports two modes for processing multiple directories:
+
+#### Simple Multi-Directory Mode
+
+Process multiple directories with the same options:
+
+```bash
+dir2prompt [OPTIONS] dir1 dir2 dir3
+```
+
+All directories share the same target options (--type, --max-depth, --max-filesize, --ignore-file).
+
+#### Advanced Per-Target Mode
+
+Process multiple directories with different options for each:
+
+```bash
+dir2prompt [GLOBAL_OPTIONS] \
+  --target NAME --dir PATH [TARGET_OPTIONS] \
+  --target NAME --dir PATH [TARGET_OPTIONS]
+```
+
+- Each `--target NAME --dir PATH` block defines a separate target
+- Target options following each block apply only to that target
+- Global target options before the first `--target` become defaults for all targets
+- Per-target options override defaults for that specific target
+
+**Note:** You cannot mix positional directories with `--target` mode.
+
 ## Examples
+
+### Basic Examples
 
 1. Generate a snapshot of the current directory:
 
-   ```
+   ```bash
    dir2prompt
    ```
 
 2. Display only the directory tree for a specific folder:
 
-   ```
+   ```bash
    dir2prompt --tree-only /path/to/your/project
    ```
 
 3. Show contents of only Python files, limited to a depth of 2:
 
-   ```
+   ```bash
    dir2prompt --type py --max-depth 2
    ```
 
 4. Use a custom ignore file:
 
-   ```
+   ```bash
    dir2prompt --ignore-file /path/to/custom/ignorefile
    ```
 
 5. Reuse an ignore file stored in your project root while inspecting a subdirectory:
 
-   ```
+   ```bash
    # Run from the project root
    dir2prompt --ignore-file testignore.txt ./docs
    ```
+
+### Multi-Directory Examples
+
+6. Process multiple directories with shared options:
+
+   ```bash
+   # Snapshot both src and tests directories
+   dir2prompt src tests
+   ```
+
+7. Process multiple directories with a shared type filter:
+
+   ```bash
+   # Show only Python files from multiple directories
+   dir2prompt --type py src tests examples
+   ```
+
+8. Advanced mode with per-target configuration:
+
+   ```bash
+   # Different filters for different directories
+   dir2prompt \
+     --target src_code --dir src --type py \
+     --target docs --dir docs --type md \
+     --target tests --dir tests --max-depth 2
+   ```
+
+9. Using default options with per-target overrides:
+
+   ```bash
+   # All targets use --type py by default, but tests directory overrides it
+   dir2prompt --type py \
+     --target main --dir src \
+     --target test --dir tests --type pytest
+   ```
+
+10. Write multi-directory output to a file:
+
+    ```bash
+    dir2prompt --output snapshot.txt src docs tests
+    ```
 
 ## Ignoring files
 

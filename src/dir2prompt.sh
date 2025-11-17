@@ -4,19 +4,34 @@
 # Usage function to display help message
 function usage {
     cat <<-EoN
-	Usage: ${PROGRAM} [OPTIONS] [DIRECTORY]	
-    Options:
-      --contents-only        Display only the contents of non-binary files.
-      --help                 Display this help message.
-      --ignore-file <FILE>   Repeatable. Use custom ignore file(s) and skip automatic .promptignore detection.
-                             Relative paths are resolved from the directory where dir2prompt is invoked.
-      --max-depth <NUM>      Limit the depth of directory traversal.
-	  --max-filesize <NUM>   Ignore files larger than NUM in size.
+	Usage: ${PROGRAM} [OPTIONS] [DIRECTORY...]
+	       ${PROGRAM} [GLOBAL_OPTIONS] --target NAME --dir PATH [TARGET_OPTIONS]...
+	
+	Global Options:
+	  --contents-only        Display only the contents of non-binary files.
+	  --help                 Display this help message.
 	  --output <FILE>        Write output to FILE instead of stdout.
 	  --tree-only            Display only the directory tree.
+	
+	Target Options (can be global defaults or per-target):
+	  --ignore-file <FILE>   Repeatable. Use custom ignore file(s) and skip automatic .promptignore detection.
+	                         Relative paths are resolved from the directory where dir2prompt is invoked.
+	  --max-depth <NUM>      Limit the depth of directory traversal.
+	  --max-filesize <NUM>   Ignore files larger than NUM in size.
 	  --type <TYPE>          Limit search to files matching the given type.
 	
-	If no directory is specified, the current directory is used.
+	Simple Multi-Directory Mode:
+	  dir2prompt [OPTIONS] dir1 dir2 dir3
+	  All directories share the same target options.
+	
+	Advanced Per-Target Mode:
+	  dir2prompt --target name1 --dir path1 [TARGET_OPTIONS] --target name2 --dir path2 [TARGET_OPTIONS]
+	  Each target can have its own configuration.
+	  Global target options before the first --target become defaults.
+	
+	Notes:
+	  - If no directory is specified, the current directory is used.
+	  - Cannot mix positional directories with --target mode.
 EoN
 } # End of function usage
 
@@ -62,11 +77,77 @@ function fatal {
 
 # Parse command-line arguments into global variables
 function parse_arguments {
-    PARSED_DIR="."
-    PARSED_IGNORE_FILES=()
+    # Global options
     PARSED_MODE="both"
-    PARSED_FILTER_OPTIONS=()
     PARSED_OUTPUT_FILE=""
+    
+    # Target arrays - using parallel arrays to store target information
+    TARGET_NAMES=()
+    TARGET_DIRS=()
+    TARGET_TYPES=()
+    TARGET_MAX_DEPTHS=()
+    TARGET_MAX_FILESIZES=()
+    TARGET_IGNORE_FILES_SERIALIZED=()  # Serialized as "file1|file2|file3" or empty
+    
+    # Temporary state for parsing
+    local positional_dirs=()
+    local use_target_mode=false
+    local has_positional=false
+    
+    # Default/global target options (before first --target in advanced mode, or global in simple mode)
+    local default_types=()
+    local default_max_depth=""
+    local default_max_filesize=""
+    local default_ignore_files=()
+    
+    # Current target being built (in advanced mode)
+    local current_target_name=""
+    local current_target_dir=""
+    local current_target_types=()
+    local current_target_max_depth=""
+    local current_target_max_filesize=""
+    local current_target_ignore_files=()
+    local current_target_has_explicit_types=false
+    local current_target_has_explicit_ignore=false
+    local in_target_block=false
+
+    # Function to finalize current target and add to arrays
+    function finalize_target {
+        if [[ -z "$current_target_dir" ]]; then
+            fatal "Target '%s' is missing --dir option" "$current_target_name"
+        fi
+        
+        TARGET_NAMES+=("$current_target_name")
+        TARGET_DIRS+=("$current_target_dir")
+        
+        # Serialize types
+        local types_str=""
+        if [[ "${#current_target_types[@]}" -gt 0 ]]; then
+            types_str=$(IFS='|'; echo "${current_target_types[*]}")
+        fi
+        TARGET_TYPES+=("$types_str")
+        
+        TARGET_MAX_DEPTHS+=("$current_target_max_depth")
+        TARGET_MAX_FILESIZES+=("$current_target_max_filesize")
+        
+        # Serialize ignore files
+        local ignore_str=""
+        if [[ "${#current_target_ignore_files[@]}" -gt 0 ]]; then
+            ignore_str=$(IFS='|'; echo "${current_target_ignore_files[*]}")
+        fi
+        TARGET_IGNORE_FILES_SERIALIZED+=("$ignore_str")
+        
+        # Reset for next target
+        current_target_name=""
+        current_target_dir=""
+        current_target_types=()
+        current_target_max_depth=""
+        current_target_max_filesize=""
+        current_target_ignore_files=()
+        current_target_has_explicit_types=false
+        current_target_has_explicit_ignore=false
+        in_target_block=false
+    }
 
     while (( $# > 0 )); do
         case "$1" in
@@ -75,27 +156,6 @@ function parse_arguments {
                 ;;
             --contents-only)
                 PARSED_MODE="contents"
-                ;;
-            --type)
-                if [[ -z "${2:-}" ]]; then
-                    fatal "Option --type requires an argument"
-                fi
-                PARSED_FILTER_OPTIONS+=("--type" "$2")
-                shift
-                ;;
-            --max-depth)
-                if [[ -z "${2:-}" ]]; then
-                    fatal "Option --max-depth requires an argument"
-                fi
-                PARSED_FILTER_OPTIONS+=("--max-depth" "$2")
-                shift
-                ;;
-            --max-filesize)
-                if [[ -z "${2:-}" ]]; then
-                    fatal "Option --max-filesize requires an argument"
-                fi
-                PARSED_FILTER_OPTIONS+=("--max-filesize" "$2")
-                shift
                 ;;
             --output)
                 if [[ -z "${2:-}" ]]; then
@@ -107,25 +167,151 @@ function parse_arguments {
             --help)
                 PARSED_MODE="help"
                 ;;
+            --target)
+                if [[ -z "${2:-}" ]]; then
+                    fatal "Option --target requires an argument (target name)"
+                fi
+                use_target_mode=true
+                
+                # Finalize previous target if any
+                if [[ "$in_target_block" == true ]]; then
+                    finalize_target
+                fi
+                
+                # Start new target
+                current_target_name="$2"
+                current_target_dir=""
+                # Initialize with defaults
+                current_target_types=("${default_types[@]+"${default_types[@]}"}")
+                current_target_max_depth="$default_max_depth"
+                current_target_max_filesize="$default_max_filesize"
+                current_target_ignore_files=("${default_ignore_files[@]+"${default_ignore_files[@]}"}")
+                current_target_has_explicit_types=false
+                current_target_has_explicit_ignore=false
+                in_target_block=true
+                shift
+                ;;
+            --dir)
+                if [[ -z "${2:-}" ]]; then
+                    fatal "Option --dir requires an argument"
+                fi
+                if [[ "$use_target_mode" != true ]]; then
+                    fatal "Option --dir can only be used with --target"
+                fi
+                current_target_dir="$2"
+                shift
+                ;;
+            --type)
+                if [[ -z "${2:-}" ]]; then
+                    fatal "Option --type requires an argument"
+                fi
+                if [[ "$in_target_block" == true ]]; then
+                    # Per-target type - clear defaults on first explicit type
+                    if [[ "$current_target_has_explicit_types" == false ]]; then
+                        current_target_types=()
+                        current_target_has_explicit_types=true
+                    fi
+                    current_target_types+=("$2")
+                else
+                    # Default/global type
+                    default_types+=("$2")
+                fi
+                shift
+                ;;
+            --max-depth)
+                if [[ -z "${2:-}" ]]; then
+                    fatal "Option --max-depth requires an argument"
+                fi
+                if [[ "$in_target_block" == true ]]; then
+                    current_target_max_depth="$2"
+                else
+                    default_max_depth="$2"
+                fi
+                shift
+                ;;
+            --max-filesize)
+                if [[ -z "${2:-}" ]]; then
+                    fatal "Option --max-filesize requires an argument"
+                fi
+                if [[ "$in_target_block" == true ]]; then
+                    current_target_max_filesize="$2"
+                else
+                    default_max_filesize="$2"
+                fi
+                shift
+                ;;
             --ignore-file)
                 if [[ -z "${2:-}" ]]; then
                     fatal "Option --ignore-file requires an argument"
                 fi
-                PARSED_IGNORE_FILES+=("$2")
+                if [[ "$in_target_block" == true ]]; then
+                    # Per-target ignore - clear defaults on first explicit ignore file
+                    if [[ "$current_target_has_explicit_ignore" == false ]]; then
+                        current_target_ignore_files=()
+                        current_target_has_explicit_ignore=true
+                    fi
+                    current_target_ignore_files+=("$2")
+                else
+                    default_ignore_files+=("$2")
+                fi
                 shift
                 ;;
             -*)
                 fatal "Unknown option: %s" "$1"
                 ;;
             *)
-                if [[ "$PARSED_DIR" != "." ]]; then
-                    fatal "Only one directory can be specified"
-                fi
-                PARSED_DIR="$1"
+                # Positional directory
+                positional_dirs+=("$1")
+                has_positional=true
                 ;;
         esac
         shift
     done
+    
+    # Finalize last target if in advanced mode
+    if [[ "$in_target_block" == true ]]; then
+        finalize_target
+    fi
+    
+    # Validate mode consistency
+    if [[ "$use_target_mode" == true ]] && [[ "$has_positional" == true ]]; then
+        fatal "Cannot mix positional directories with --target mode"
+    fi
+    
+    # Build target list based on mode
+    if [[ "$use_target_mode" == true ]]; then
+        # Advanced mode - targets already built
+        if [[ "${#TARGET_DIRS[@]}" -eq 0 ]]; then
+            fatal "At least one --target with --dir must be specified in target mode"
+        fi
+    else
+        # Simple mode - build targets from positional directories
+        if [[ "${#positional_dirs[@]}" -eq 0 ]]; then
+            positional_dirs=(".")
+        fi
+        
+        for dir in "${positional_dirs[@]}"; do
+            TARGET_NAMES+=("")  # No name in simple mode
+            TARGET_DIRS+=("$dir")
+            
+            # Serialize default types
+            local types_str=""
+            if [[ "${#default_types[@]}" -gt 0 ]]; then
+                types_str=$(IFS='|'; echo "${default_types[*]}")
+            fi
+            TARGET_TYPES+=("$types_str")
+            
+            TARGET_MAX_DEPTHS+=("$default_max_depth")
+            TARGET_MAX_FILESIZES+=("$default_max_filesize")
+            
+            # Serialize default ignore files
+            local ignore_str=""
+            if [[ "${#default_ignore_files[@]}" -gt 0 ]]; then
+                ignore_str=$(IFS='|'; echo "${default_ignore_files[*]}")
+            fi
+            TARGET_IGNORE_FILES_SERIALIZED+=("$ignore_str")
+        done
+    fi
 } # End of function parse_arguments
 
 # Check if required dependencies are installed
@@ -184,22 +370,44 @@ function generate_contents {
 # Porcelain commands
 
 # Main function to generate snapshot
-function main {
+# Process a single target
+function process_target {
     local dir="$1"
     local mode="$2"
-    local ignore_count="$3"
-    shift 3
+    shift 2
     
-    # Extract ignore_files (first ignore_count arguments)
+    # Remaining arguments are: types_serialized max_depth max_filesize ignore_files_serialized
+    local types_serialized="$1"
+    local max_depth="$2"
+    local max_filesize="$3"
+    local ignore_files_serialized="$4"
+    
+    # Build filter options from target configuration
+    local -a filter_options=()
+    
+    # Add types
+    if [[ -n "$types_serialized" ]]; then
+        IFS='|' read -ra types_array <<< "$types_serialized"
+        for type in "${types_array[@]}"; do
+            filter_options+=("--type" "$type")
+        done
+    fi
+    
+    # Add max-depth
+    if [[ -n "$max_depth" ]]; then
+        filter_options+=("--max-depth" "$max_depth")
+    fi
+    
+    # Add max-filesize
+    if [[ -n "$max_filesize" ]]; then
+        filter_options+=("--max-filesize" "$max_filesize")
+    fi
+    
+    # Parse ignore files
     local -a ignore_files=()
-    local i
-    for ((i=0; i<ignore_count; i++)); do
-        ignore_files+=("$1")
-        shift
-    done
-    
-    # Remaining arguments are filter_options
-    local -a filter_options=("$@")
+    if [[ -n "$ignore_files_serialized" ]]; then
+        IFS='|' read -ra ignore_files <<< "$ignore_files_serialized"
+    fi
 
     # Handle ripgrep configuration file
     # See: https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md#configuration-file
@@ -207,6 +415,9 @@ function main {
     git_root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)
     if [[ -n "$git_root" && -f "$git_root/.ripgreprc" ]]; then
         export RIPGREP_CONFIG_PATH="$git_root/.ripgreprc"
+    else
+        # Unset to avoid using config from previous target
+        unset RIPGREP_CONFIG_PATH
     fi
 
     # Handle ignore files based on new logic
@@ -232,12 +443,6 @@ function main {
     fi
 
     case "$mode" in
-        help)
-            usage
-            log ""
-            log "Maintainer: $Maintainer - Version: $Version"
-            exit 0
-            ;;
         both)
             generate_tree "$dir" "${filter_options[@]+"${filter_options[@]}"}"
             printf '\n'
@@ -253,6 +458,37 @@ function main {
             fatal "Invalid mode '%s'" "$mode"
             ;;
     esac
+} # End of function process_target
+
+# Main function to orchestrate processing of all targets
+function main {
+    local mode="$1"
+    
+    # Handle help mode
+    if [[ "$mode" == "help" ]]; then
+        usage
+        log ""
+        log "Maintainer: $Maintainer - Version: $Version"
+        exit 0
+    fi
+    
+    # Process each target
+    local num_targets="${#TARGET_DIRS[@]}"
+    local i
+    for ((i=0; i<num_targets; i++)); do
+        local target_dir="${TARGET_DIRS[$i]}"
+        local types_serialized="${TARGET_TYPES[$i]}"
+        local max_depth="${TARGET_MAX_DEPTHS[$i]}"
+        local max_filesize="${TARGET_MAX_FILESIZES[$i]}"
+        local ignore_files_serialized="${TARGET_IGNORE_FILES_SERIALIZED[$i]}"
+        
+        # Add separator between targets if there are multiple
+        if [[ "$i" -gt 0 ]]; then
+            printf '\n'
+        fi
+        
+        process_target "$target_dir" "$mode" "$types_serialized" "$max_depth" "$max_filesize" "$ignore_files_serialized"
+    done
 } # End of function main
 
 # Main execution
@@ -263,9 +499,9 @@ if [ "$0" = "${BASH_SOURCE:-$0}" ]; then
     # Handle output redirection if --output was specified
     if [[ -n "$PARSED_OUTPUT_FILE" ]]; then
         # Redirect stdout to the output file and execute main
-        main "$PARSED_DIR" "$PARSED_MODE" "${#PARSED_IGNORE_FILES[@]}" "${PARSED_IGNORE_FILES[@]+"${PARSED_IGNORE_FILES[@]}"}" "${PARSED_FILTER_OPTIONS[@]+"${PARSED_FILTER_OPTIONS[@]}"}" > "$PARSED_OUTPUT_FILE"
+        main "$PARSED_MODE" > "$PARSED_OUTPUT_FILE"
     else
         # Output to stdout as usual
-        main "$PARSED_DIR" "$PARSED_MODE" "${#PARSED_IGNORE_FILES[@]}" "${PARSED_IGNORE_FILES[@]+"${PARSED_IGNORE_FILES[@]}"}" "${PARSED_FILTER_OPTIONS[@]+"${PARSED_FILTER_OPTIONS[@]}"}"
+        main "$PARSED_MODE"
     fi
 fi
