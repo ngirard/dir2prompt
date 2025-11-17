@@ -38,12 +38,13 @@ function usage {
 	  Global target options before the first --target become defaults.
 	
     Key Concepts:
-      RULE: A named set of gitignore-style patterns (include/exclude) stored in 
-            .dir2prompt/rules/<name>.ignore. Rules are reusable building blocks.
+      RULE: A named set of gitignore-style patterns. Use '!pattern' to **include**
+          files for a focused context, and 'pattern' to **exclude** them. Rules are
+          reusable building blocks stored in .dir2prompt/rules/<name>.ignore.
             
       VIEW: A named combination of multiple rules that creates a specific repository
-            snapshot perspective (e.g., 'docs-only', 'backend-logic', 'full-context').
-            Views are defined in .dir2prompt/views.yml.
+          snapshot perspective (e.g., 'docs-only', 'backend-logic', 'full-context').
+          Views are defined in .dir2prompt/views.yml.
     
     File Selection Precedence (most specific to least specific):
       1. CLI flags (--ignore-file, --add-rule, --drop-rule, --add-rule-file)
@@ -77,11 +78,13 @@ function rules_usage {
 	for your repository snapshots. This is more powerful and maintainable than ad-hoc
 	filtering with --ignore-file or --type flags.
 	
-	Key Concepts:
-	  RULE  - A named set of gitignore-style patterns (include/exclude) stored in 
-	          .dir2prompt/rules/<name>.ignore. Rules are the building blocks.
-	          
-	  VIEW  - A named combination of multiple rules that creates a specific snapshot
+    Key Concepts:
+      RULE  - A named set of gitignore-style patterns. The key to creating a
+          focused context is using **include patterns** (e.g., `!src/**/*.js`)
+          to select specific files, and **exclude patterns** to refine the
+          selection. Rules are the building blocks for views.
+              
+      VIEW  - A named combination of multiple rules that creates a specific snapshot
 	          perspective (e.g., 'docs-only', 'backend-logic', 'full-context').
 	          Views are defined in .dir2prompt/views.yml.
 	
@@ -145,17 +148,29 @@ function rules_add_usage {
 	  --base-view <BASE>     When creating a view, inherit rules from BASE view first
 	                         (requires --view)
 	
-	Input:
-	  Patterns are gitignore-style:
-	    pattern        - Exclude files matching pattern
-	    !pattern       - Include (negate previous exclusions)
-	    /pattern       - Match only at root level
-	    dir/           - Match directories
-	    *.ext          - Match by extension
-	    **/pattern     - Match at any depth
-	
-	  If --from-file is provided, patterns are read from that file.
-	  Otherwise, patterns are read from stdin until EOF.
+        Input:
+            Patterns use gitignore syntax to define the selection logic. The selection
+            algorithm is `(Universe ∩ Includes) \ Excludes`.
+      
+            - To create a focused context, use **include patterns** starting with `!`.
+                If any include patterns exist, only files matching them are considered for
+                the snapshot. This is the most powerful feature for precision.
+                Example: `!src/api/**` or `!*.md`
+        
+            - To remove files, use **exclude patterns** (any line without `!`). These
+                are applied after includes, allowing you to refine the selection.
+                Example: `src/api/legacy/**`
+
+            Syntax Summary:
+                !pattern       - **Include** files. Defines the initial set for a focused view.
+                pattern        - **Exclude** files. Refines the included set.
+                /pattern       - Match only at the root of the target directory.
+                dir/           - Match directories.
+                *.ext          - Match by extension.
+                **/pattern     - Match at any depth.
+
+            If --from-file is provided, patterns are read from that file.
+            Otherwise, patterns are read from stdin until EOF.
 	
 	Output:
 	  The rule is written to .dir2prompt/rules/<RULE_NAME>.ignore
