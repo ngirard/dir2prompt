@@ -351,6 +351,67 @@ else
     test_fail "--output without argument should show error message"
 fi
 
+# Test 21: Relative --ignore-file resolves from invocation directory even for subdirectories
+test_start "Relative --ignore-file works when targeting subdirectory"
+project_tmp=$(mktemp -d)
+pushd "$project_tmp" >/dev/null
+mkdir -p docs
+echo "keep" > docs/keepme.txt
+echo "ignore" > docs/ignoreme.txt
+cat <<'EOF' > testignore.txt
+ignoreme.txt
+EOF
+output=$("$DIR2PROMPT" --ignore-file testignore.txt ./docs 2>&1)
+popd >/dev/null
+rm -rf "$project_tmp"
+if assert_contains "$output" "keepme.txt" && \
+    assert_not_contains "$output" '`ignoreme.txt`:' && \
+   assert_not_contains "$output" "No such file or directory"; then
+    test_pass
+else
+    test_fail "Relative ignore file should be resolved from invocation directory when inspecting subdirectories"
+fi
+
+# Test 22: Absolute --ignore-file paths continue to work
+test_start "Absolute --ignore-file path remains supported"
+project_tmp=$(mktemp -d)
+pushd "$project_tmp" >/dev/null
+mkdir -p docs
+echo "keep" > docs/keepme.txt
+echo "ignore" > docs/ignoreme.txt
+cat <<'EOF' > testignore.txt
+ignoreme.txt
+EOF
+abs_ignore="$project_tmp/testignore.txt"
+output=$("$DIR2PROMPT" --ignore-file "$abs_ignore" ./docs 2>&1)
+popd >/dev/null
+rm -rf "$project_tmp"
+if assert_contains "$output" "keepme.txt" && \
+    assert_not_contains "$output" '`ignoreme.txt`:'; then
+    test_pass
+else
+    test_fail "Absolute ignore file paths should remain valid"
+fi
+
+# Test 23: Relative --ignore-file works when targeting current directory
+test_start "Relative --ignore-file works for current directory"
+project_tmp=$(mktemp -d)
+pushd "$project_tmp" >/dev/null
+echo "keep" > keepme.txt
+echo "ignore" > ignoreme.txt
+cat <<'EOF' > testignore.txt
+ignoreme.txt
+EOF
+output=$("$DIR2PROMPT" --ignore-file testignore.txt 2>&1)
+popd >/dev/null
+rm -rf "$project_tmp"
+if assert_contains "$output" "keepme.txt" && \
+    assert_not_contains "$output" '`ignoreme.txt`:'; then
+    test_pass
+else
+    test_fail "Relative ignore file should also work when targeting the invocation directory"
+fi
+
 # ============================================================================
 # Summary
 # ============================================================================

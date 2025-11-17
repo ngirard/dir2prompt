@@ -60,8 +60,9 @@ Options:
   --contents-only      Display only the contents of non-binary files.
   --type <TYPE>        Limit search to files matching the given type.
   --max-depth <NUM>    Limit the depth of directory traversal.
-   --max-filesize <NUM> Ignore files larger than NUM in size.
-   --ignore-file <FILE> Specify one or more custom ignore files (repeatable).
+  --max-filesize <NUM> Ignore files larger than NUM in size.
+  --ignore-file <FILE> Specify one or more custom ignore files (repeatable).
+                       Relative paths are resolved from the directory where you run dir2prompt.
   --help               Display this help message.
 
 If no directory is specified, the current directory is used.
@@ -93,11 +94,18 @@ If no directory is specified, the current directory is used.
    dir2prompt --ignore-file /path/to/custom/ignorefile
    ```
 
+5. Reuse an ignore file stored in your project root while inspecting a subdirectory:
+
+   ```
+   # Run from the project root
+   dir2prompt --ignore-file testignore.txt ./docs
+   ```
+
 ## Ignoring files
 
 `dir2prompt` supports a layered ignore strategy so you can swap between a default view of a project and bespoke queries without editing files in place:
 
-1. **Explicit `--ignore-file` flags take precedence.** When you pass one or more `--ignore-file <FILE>` options (the flag is repeatable), only those files are honored and the automatic `.promptignore` detection is skipped. This makes it possible to describe alternate “queries” for the same repository without having to touch the canonical `.promptignore`.
+1. **Explicit `--ignore-file` flags take precedence.** When you pass one or more `--ignore-file <FILE>` options (the flag is repeatable), only those files are honored and the automatic `.promptignore` detection is skipped. Relative paths are interpreted from the directory where you invoke `dir2prompt`, so you can keep ignore files (for example `testignore.txt`) at the repository root and reuse them while snapshotting nested folders such as `dir2prompt --ignore-file testignore.txt ./docs`. This makes it possible to describe alternate “queries” for the same repository without having to touch the canonical `.promptignore`.
 2. **Project defaults live in `.promptignore`.** If no `--ignore-file` flag is provided, `dir2prompt` first checks the target directory for `.promptignore`.
 3. **Git root fallback.** Still no match? `dir2prompt` will try to locate the Git root of the target directory and reuse `${git_root}/.promptignore` when it exists. This lets you keep a single default view at the repository level even when running the tool from a nested folder.
 

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2025-11-17
+### Fixed
+- `--ignore-file` paths are now resolved relative to the directory where `dir2prompt` is invoked, preventing ripgrep errors when targeting nested directories (e.g., `dir2prompt --ignore-file testignore.txt ./docs`).
+
+### Added
+- Regression tests covering relative and absolute `--ignore-file` paths and documentation clarifying the new semantics.
+
 ## [0.3.0] - 2025-11-16
 ### Added
 - `--output <FILE>` option: Write dir2prompt output to a file instead of stdout.

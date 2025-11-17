@@ -5,11 +5,12 @@
 function usage {
     cat <<-EoN
 	Usage: ${PROGRAM} [OPTIONS] [DIRECTORY]	
-	Options:
-	  --contents-only        Display only the contents of non-binary files.
-	  --help                 Display this help message.
+    Options:
+      --contents-only        Display only the contents of non-binary files.
+      --help                 Display this help message.
       --ignore-file <FILE>   Repeatable. Use custom ignore file(s) and skip automatic .promptignore detection.
-	  --max-depth <NUM>      Limit the depth of directory traversal.
+                             Relative paths are resolved from the directory where dir2prompt is invoked.
+      --max-depth <NUM>      Limit the depth of directory traversal.
 	  --max-filesize <NUM>   Ignore files larger than NUM in size.
 	  --output <FILE>        Write output to FILE instead of stdout.
 	  --tree-only            Display only the directory tree.
@@ -32,6 +33,10 @@ DEPENDENCIES=('rg' 'tree')
 
 # Error messages
 ERROR_MISSING_DEP='Required dependency '%s' not found. Please install it and try again.'
+
+# Capture the directory where dir2prompt was invoked so we can resolve
+# user-provided paths (e.g., --ignore-file) before changing directories.
+ORIG_CWD=$(pwd)
 
 # ——————————
 # Logging
@@ -208,7 +213,11 @@ function main {
     if [[ "${#ignore_files[@]}" -gt 0 ]]; then
         # When the caller provides --ignore-file flags, only those files define the view.
         for ignore_file in "${ignore_files[@]}"; do
-            filter_options+=("--ignore-file" "$ignore_file")
+            local normalized_ignore_file="$ignore_file"
+            if [[ "$normalized_ignore_file" != /* ]]; then
+                normalized_ignore_file="$ORIG_CWD/$normalized_ignore_file"
+            fi
+            filter_options+=("--ignore-file" "$normalized_ignore_file")
         done
     else
         # Default view: check directory-local .promptignore, then fall back to the git root.
