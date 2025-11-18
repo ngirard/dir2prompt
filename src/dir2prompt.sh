@@ -466,6 +466,13 @@ function parse_gitignore_rule_file {
     local rule_path="$1"
     local -n includes_ref="$2"
     local -n excludes_ref="$3"
+    local record_order=false
+    if (( $# >= 4 )); then
+        record_order=true
+        # shellcheck disable=SC2034 # referenced via nameref
+        local -n ordered_ref="$4"
+        ordered_ref=()
+    fi
 
     includes_ref=()
     excludes_ref=()
@@ -480,12 +487,36 @@ function parse_gitignore_rule_file {
         if [[ "${trimmed:0:1}" == '#' ]]; then
             continue
         fi
+        local entry_type="exclude"
+        local pattern="$trimmed"
         if [[ "${trimmed:0:1}" == '!' ]]; then
-            includes_ref+=("${trimmed:1}")
+            entry_type="include"
+            pattern="${trimmed:1}"
+            includes_ref+=("$pattern")
         else
-            excludes_ref+=("$trimmed")
+            excludes_ref+=("$pattern")
+        fi
+        if [[ "$record_order" == true ]]; then
+            ordered_ref+=("$entry_type${LIST_SEPARATOR}$pattern")
         fi
     done < "$rule_path"
+}
+
+function compile_gitignore_sequence {
+    local -n __out_ref="$1"
+    local -n __sequence_ref="$2"
+    __out_ref=()
+    local entry
+    for entry in "${__sequence_ref[@]}"; do
+        if [[ -z "$entry" ]]; then
+            continue
+        fi
+        local entry_type="${entry%%${LIST_SEPARATOR}*}"
+        local pattern="${entry#*${LIST_SEPARATOR}}"
+        local regex
+        regex=$(gitignore_pattern_to_regex "$pattern")
+        __out_ref+=("$entry_type${LIST_SEPARATOR}$regex")
+    done
 }
 
 
@@ -1024,6 +1055,62 @@ function path_matches_any_regex {
     return 1
 }
 
+function path_or_ancestor_matches_regex {
+    local path="$1"
+    local regex="$2"
+    if [[ -z "$regex" ]]; then
+        return 1
+    fi
+    local -a __single_regex=("$regex")
+    path_matches_any_regex "$path" __single_regex
+}
+
+function gitignore_sequence_allows_path {
+    local path="$1"
+    local -n __compiled_ref="$2"
+    if [[ -z "$path" ]]; then
+        return 0
+    fi
+    if [[ "${#__compiled_ref[@]}" -eq 0 ]]; then
+        return 0
+    fi
+    local decision="include"
+    local entry
+    for entry in "${__compiled_ref[@]}"; do
+        if [[ -z "$entry" ]]; then
+            continue
+        fi
+        local entry_type="${entry%%${LIST_SEPARATOR}*}"
+        local regex="${entry#*${LIST_SEPARATOR}}"
+        if path_or_ancestor_matches_regex "$path" "$regex"; then
+            decision="$entry_type"
+        fi
+    done
+    if [[ "$decision" == "include" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+function apply_gitignore_sequence_filters {
+    local -n __out_ref="$1"
+    local -n __source_ref="$2"
+    local -n __compiled_sequence_ref="$3"
+
+    if [[ "${#__compiled_sequence_ref[@]}" -eq 0 ]]; then
+        __out_ref=("${__source_ref[@]}")
+        return
+    fi
+
+    __out_ref=()
+    local path
+    for path in "${__source_ref[@]}"; do
+        if gitignore_sequence_allows_path "$path" __compiled_sequence_ref; then
+            __out_ref+=("$path")
+        fi
+    done
+}
+
 function _enumerate_true_universe {
     local dir="$1"
     local types_serialized="$2"
@@ -1328,6 +1415,8 @@ function build_selection_context_for_dir {
 
     local -a baseline_include_patterns=()
     local -a baseline_exclude_patterns=()
+    local -a baseline_pattern_sequence=()
+    local -a baseline_compiled_patterns=()
     local baseline_filters_active=false
 
     local baseline_file
@@ -1335,27 +1424,42 @@ function build_selection_context_for_dir {
         baseline_filters_active=true
         local -a tmp_includes=()
         local -a tmp_excludes=()
-        parse_gitignore_rule_file "$baseline_file" tmp_includes tmp_excludes
+        local -a tmp_ordered=()
+        parse_gitignore_rule_file "$baseline_file" tmp_includes tmp_excludes tmp_ordered
         baseline_include_patterns+=("${tmp_includes[@]}")
         baseline_exclude_patterns+=("${tmp_excludes[@]}")
+        baseline_pattern_sequence+=("${tmp_ordered[@]}")
     done
 
+    if [[ "${#baseline_pattern_sequence[@]}" -gt 0 ]]; then
+        compile_gitignore_sequence baseline_compiled_patterns baseline_pattern_sequence
+    fi
+
+    local -a ripgreprc_includes=()
+    local -a ripgreprc_excludes=()
     if [[ -n "$ripgreprc_include_serialized" ]]; then
         baseline_filters_active=true
-        local -a ripgreprc_includes=()
         IFS='|' read -ra ripgreprc_includes <<< "$ripgreprc_include_serialized"
         baseline_include_patterns+=("${ripgreprc_includes[@]}")
     fi
     if [[ -n "$ripgreprc_exclude_serialized" ]]; then
         baseline_filters_active=true
-        local -a ripgreprc_excludes=()
         IFS='|' read -ra ripgreprc_excludes <<< "$ripgreprc_exclude_serialized"
         baseline_exclude_patterns+=("${ripgreprc_excludes[@]}")
     fi
 
+    local -a baseline_stage=("${universe[@]}")
+    if [[ "${#baseline_compiled_patterns[@]}" -gt 0 ]]; then
+        local -a promptignore_filtered=()
+        apply_gitignore_sequence_filters promptignore_filtered baseline_stage baseline_compiled_patterns
+        baseline_stage=("${promptignore_filtered[@]}")
+    fi
+
     local -a baseline_selection=()
-    if [[ "$baseline_filters_active" == true ]]; then
-        apply_pattern_filters baseline_selection universe baseline_include_patterns baseline_exclude_patterns
+    if [[ "${#ripgreprc_includes[@]}" -gt 0 || "${#ripgreprc_excludes[@]}" -gt 0 ]]; then
+        apply_pattern_filters baseline_selection baseline_stage ripgreprc_includes ripgreprc_excludes
+    elif [[ "$baseline_filters_active" == true ]]; then
+        baseline_selection=("${baseline_stage[@]}")
     else
         baseline_selection=("${universe[@]}")
     fi
@@ -1383,6 +1487,8 @@ function build_selection_context_for_dir {
     __ctx_ref[cli_ignore_files]="$(serialize_array cli_ignore_files)"
     __ctx_ref[baseline_includes]="$(serialize_array baseline_include_patterns)"
     __ctx_ref[baseline_excludes]="$(serialize_array baseline_exclude_patterns)"
+    __ctx_ref[baseline_pattern_sequence]="$(serialize_array baseline_pattern_sequence)"
+    __ctx_ref[baseline_pattern_compiled]="$(serialize_array baseline_compiled_patterns)"
     __ctx_ref[baseline_filters_active]="$baseline_filters_active"
     __ctx_ref[universe]="$(serialize_array universe)"
     __ctx_ref[baseline_selection]="$(serialize_array baseline_selection)"
@@ -1626,6 +1732,8 @@ function build_final_selection {
 
     local -a baseline_include_patterns=()
     local -a baseline_exclude_patterns=()
+    local -a baseline_pattern_sequence=()
+    local -a baseline_compiled_patterns=()
     local baseline_filters_active=false
 
     local baseline_file
@@ -1633,27 +1741,42 @@ function build_final_selection {
         baseline_filters_active=true
         local -a tmp_includes=()
         local -a tmp_excludes=()
-        parse_gitignore_rule_file "$baseline_file" tmp_includes tmp_excludes
+        local -a tmp_ordered=()
+        parse_gitignore_rule_file "$baseline_file" tmp_includes tmp_excludes tmp_ordered
         baseline_include_patterns+=("${tmp_includes[@]}")
         baseline_exclude_patterns+=("${tmp_excludes[@]}")
+        baseline_pattern_sequence+=("${tmp_ordered[@]}")
     done
 
+    if [[ "${#baseline_pattern_sequence[@]}" -gt 0 ]]; then
+        compile_gitignore_sequence baseline_compiled_patterns baseline_pattern_sequence
+    fi
+
+    local -a ripgreprc_includes=()
+    local -a ripgreprc_excludes=()
     if [[ -n "$ripgreprc_include_serialized" ]]; then
         baseline_filters_active=true
-        local -a ripgreprc_includes=()
         IFS='|' read -ra ripgreprc_includes <<< "$ripgreprc_include_serialized"
         baseline_include_patterns+=("${ripgreprc_includes[@]}")
     fi
     if [[ -n "$ripgreprc_exclude_serialized" ]]; then
         baseline_filters_active=true
-        local -a ripgreprc_excludes=()
         IFS='|' read -ra ripgreprc_excludes <<< "$ripgreprc_exclude_serialized"
         baseline_exclude_patterns+=("${ripgreprc_excludes[@]}")
     fi
 
+    local -a baseline_stage=("${universe[@]}")
+    if [[ "${#baseline_compiled_patterns[@]}" -gt 0 ]]; then
+        local -a promptignore_filtered=()
+        apply_gitignore_sequence_filters promptignore_filtered baseline_stage baseline_compiled_patterns
+        baseline_stage=("${promptignore_filtered[@]}")
+    fi
+
     local -a baseline_selection=()
-    if [[ "$baseline_filters_active" == true ]]; then
-        apply_pattern_filters baseline_selection universe baseline_include_patterns baseline_exclude_patterns
+    if [[ "${#ripgreprc_includes[@]}" -gt 0 || "${#ripgreprc_excludes[@]}" -gt 0 ]]; then
+        apply_pattern_filters baseline_selection baseline_stage ripgreprc_includes ripgreprc_excludes
+    elif [[ "$baseline_filters_active" == true ]]; then
+        baseline_selection=("${baseline_stage[@]}")
     else
         baseline_selection=("${universe[@]}")
     fi
@@ -1678,6 +1801,10 @@ function build_final_selection {
         baseline_files_serialized=$(serialize_array baseline_ignore_array)
         local cli_ignore_serialized=""
         cli_ignore_serialized=$(serialize_array cli_ignore_files)
+    local baseline_sequence_serialized=""
+    baseline_sequence_serialized=$(serialize_array baseline_pattern_sequence)
+    local baseline_compiled_serialized=""
+    baseline_compiled_serialized=$(serialize_array baseline_compiled_patterns)
 
         DIR2PROMPT_LAST_SELECTION_META["active_rules"]="$active_rules_serialized"
         DIR2PROMPT_LAST_SELECTION_META["ephemeral_rule_files"]="$ephemeral_serialized"
@@ -1697,6 +1824,8 @@ function build_final_selection {
         DIR2PROMPT_LAST_SELECTION_META["selection_count"]="$final_count"
         DIR2PROMPT_LAST_SELECTION_META["baseline_ignore_files"]="$baseline_files_serialized"
         DIR2PROMPT_LAST_SELECTION_META["cli_ignore_files"]="$cli_ignore_serialized"
+    DIR2PROMPT_LAST_SELECTION_META["baseline_pattern_sequence"]="$baseline_sequence_serialized"
+    DIR2PROMPT_LAST_SELECTION_META["baseline_pattern_compiled"]="$baseline_compiled_serialized"
         DIR2PROMPT_LAST_SELECTION_META["ripgreprc_include"]="$ripgreprc_include_serialized"
         DIR2PROMPT_LAST_SELECTION_META["ripgreprc_exclude"]="$ripgreprc_exclude_serialized"
         DIR2PROMPT_LAST_SELECTION_META["ripgreprc_path"]="$ripgreprc_path"
@@ -1734,6 +1863,8 @@ function analyze_path_fate {
     deserialize_serialized_list "${__ctx_ref[baseline_includes]:-}" baseline_includes
     local -a baseline_excludes=()
     deserialize_serialized_list "${__ctx_ref[baseline_excludes]:-}" baseline_excludes
+    local -a baseline_sequence_compiled=()
+    deserialize_serialized_list "${__ctx_ref[baseline_pattern_compiled]:-}" baseline_sequence_compiled
 
     local -a include_patterns=()
     deserialize_serialized_list "${__ctx_ref[include_patterns]:-}" include_patterns
@@ -1768,12 +1899,32 @@ function analyze_path_fate {
     __out_ref[in_universe]="$in_universe"
 
     local passes_baseline=false
-    local -a baseline_pass_test=("$rel_path")
     if [[ "${__ctx_ref[baseline_filters_active]:-false}" == "true" ]]; then
-        local -a baseline_result=()
-        apply_pattern_filters baseline_result baseline_pass_test baseline_includes baseline_excludes
-        if [[ "${#baseline_result[@]}" -gt 0 ]]; then
-            passes_baseline=true
+        passes_baseline=true
+        if [[ "${#baseline_sequence_compiled[@]}" -gt 0 ]]; then
+            if ! gitignore_sequence_allows_path "$rel_path" baseline_sequence_compiled; then
+                passes_baseline=false
+            fi
+        fi
+        if [[ "$passes_baseline" == true ]]; then
+            local rip_include_serialized="${__ctx_ref[ripgreprc_include]:-}"
+            local rip_exclude_serialized="${__ctx_ref[ripgreprc_exclude]:-}"
+            if [[ -n "$rip_include_serialized" || -n "$rip_exclude_serialized" ]]; then
+                local -a rip_includes=()
+                local -a rip_excludes=()
+                if [[ -n "$rip_include_serialized" ]]; then
+                    IFS='|' read -ra rip_includes <<< "$rip_include_serialized"
+                fi
+                if [[ -n "$rip_exclude_serialized" ]]; then
+                    IFS='|' read -ra rip_excludes <<< "$rip_exclude_serialized"
+                fi
+                local -a baseline_pass_test=("$rel_path")
+                local -a rip_result=()
+                apply_pattern_filters rip_result baseline_pass_test rip_includes rip_excludes
+                if [[ "${#rip_result[@]}" -eq 0 ]]; then
+                    passes_baseline=false
+                fi
+            fi
         fi
     else
         passes_baseline=true

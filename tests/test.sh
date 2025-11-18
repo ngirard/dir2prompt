@@ -19,6 +19,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 FIXTURES_DIR="$SCRIPT_DIR/fixtures/simple_project"
 PROMPTIGNORE_DIR_FIXTURES="$(cd "$SCRIPT_DIR/fixtures/promptignore_dirs" && pwd)"
+PROMPTIGNORE_NEGATION_FIXTURE="$(cd "$SCRIPT_DIR/fixtures/promptignore_negation" && pwd)"
 CONFIG_FIXTURE="$(cd "$SCRIPT_DIR/fixtures/project_with_rules" && pwd)"
 DIR2PROMPT="$BUILD_DIR/dir2prompt.sh"
 
@@ -179,6 +180,16 @@ if assert_not_contains "$output" "design/notes.md" && \
     test_pass
 else
     test_fail ".promptignore should hide directories recursively"
+fi
+
+# Test 7c: .promptignore negations re-include nested paths
+test_start ".promptignore negations re-include targeted subdirectories"
+output=$("$DIR2PROMPT" "$PROMPTIGNORE_NEGATION_FIXTURE" 2>&1)
+if assert_contains "$output" "docs/concepts/overview.md" && \
+   assert_not_contains "$output" "docs/guide.md"; then
+    test_pass
+else
+    test_fail ".promptignore negations should re-include nested directories"
 fi
 
 # Test 8: --ignore-file with custom file
