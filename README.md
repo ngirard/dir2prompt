@@ -65,6 +65,7 @@ Global Options:
   --contents-only        Display only the contents of non-binary files.
   --help                 Display this help message.
   --manifest[=MODE]      Emit a manifest before the snapshot (summary|full|llm).
+  --map <GLOB>:<CMD>     Repeatable. Transform matching files via CMD. Last match wins; use 'raw' to bypass.
   --output <FILE>        Write output to FILE instead of stdout.
   --tree-only            Display only the directory tree.
 
@@ -198,6 +199,33 @@ The command produces a Markdown explanation that walks through the universe, bas
     ```bash
     dir2prompt --output snapshot.txt src docs tests
     ```
+
+## Content Mapping & Preprocessing
+
+Use the repeatable `--map <GLOB>:<CMD>` flag when you want to preprocess some files before they land in the prompt. Each mapping pairs a shell glob with a command, `{}` expands to the absolute path of the file being rendered, and the **last matching rule wins**. If the command omits `{}`, `dir2prompt` appends the filename automatically. Specify `raw` as the command to explicitly bypass earlier mappings for a more specific glob.
+
+When a mapping is active the file header changes to `` `relative/path` (transformed via `<CMD>`): `` so it is obvious to the LLM that the content is synthesized rather than the literal file bytes.
+
+### Scenario A – Token-Saving "Skim" Workflow
+
+Strip implementation detail from all Rust files by piping them through [`skim`](https://github.com/endeav0r/skim) while keeping the rest of the repository untouched:
+
+```bash
+dir2prompt --map "*.rs:skim --mode structure {}" src/
+```
+
+### Scenario B – Focus on a Single File
+
+Layer a more specific rule to keep `src/main.rs` raw while every other Rust file is summarized. The explicit `raw` command overrides the broader glob because it appears last:
+
+```bash
+dir2prompt \
+   --map "*.rs:skim --mode structure {}" \
+   --map "src/main.rs:raw" \
+   src/
+```
+
+Because mappings cascade, you can mix and match other preprocessors too—`jq` for JSON, `pandoc` for formats like Markdown, or `tr` for simple normalization—without touching files on disk.
 
 ## Ignoring files
 

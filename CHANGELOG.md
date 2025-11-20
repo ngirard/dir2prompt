@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--manifest` / `--manifest=full` / `--manifest=llm`.
 - Rules and views.
 - New files selection system using `fd` instead of `rg` for discovery.
+- Added the `explain-path` subcommand to understand why specific files are included or filtered out under the current rules and CLI options.
+- Allow content mapping & preprocessing using the repeatable `--map <GLOB>:<CMD>` flag.
 
 ## [0.3.1] - 2025-11-17
 ### Fixed

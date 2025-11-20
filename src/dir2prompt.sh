@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 # Bash script to create a snapshot of a directory's structure and contents for LLM prompts.
-
-# Usage function to display help message
 function usage {
     cat <<-EoN
     Usage: ${PROGRAM} [OPTIONS] [DIRECTORY...]
            ${PROGRAM} [GLOBAL_OPTIONS] --target NAME --dir PATH [TARGET_OPTIONS]...
            ${PROGRAM} rules <add|list|show|init> [...]
            ${PROGRAM} explain-path [OPTIONS] PATH [PATH...]
-	
-	Global Options:
 	  --contents-only        Display only the contents of non-binary files.
 	  --help                 Display this help message.
       --manifest[=MODE]      Emit a manifest explaining how files were selected, which is
                              useful for debugging rules. (modes: summary, full, llm).
+            --map <GLOB>:<CMD>     Repeatable. Transform matching files via CMD. Last match wins;
+                                                         use 'raw' to bypass earlier mappings.
       --output <FILE>        Write output to FILE instead of stdout.
 	  --tree-only            Display only the directory tree.
 	
@@ -323,6 +321,8 @@ declare -gA DIR2PROMPT_VIEW_ORDERS=()
 declare -gA DIR2PROMPT_BASELINE_VIEW=()
 declare -gA DIR2PROMPT_CONFIG_DUMPED=()
 declare -gA DIR2PROMPT_LAST_SELECTION_META=()
+declare -ga MAP_PATTERNS=()
+declare -ga MAP_COMMANDS=()
 
 function trim_whitespace {
     local value="$1"
@@ -395,6 +395,28 @@ function append_to_assoc_list {
     else
         assoc_ref["$key"]="$existing$LIST_SEPARATOR$value"
     fi
+}
+
+function append_map_rule {
+    local spec="$1"
+    if [[ -z "$spec" ]]; then
+        fatal "Option --map requires an argument in the form '<GLOB>:<COMMAND>'"
+    fi
+
+    local pattern="${spec%%:*}"
+    if [[ "$pattern" == "$spec" ]]; then
+        fatal "Option --map requires an argument containing ':' (pattern:command)"
+    fi
+    local command="${spec#*:}"
+    pattern=$(trim_whitespace "$pattern")
+    command=$(trim_whitespace "$command")
+
+    if [[ -z "$pattern" || -z "$command" ]]; then
+        fatal "Option --map requires both a glob pattern and a command"
+    fi
+
+    MAP_PATTERNS+=("$pattern")
+    MAP_COMMANDS+=("$command")
 }
 
 function serialize_array {
@@ -2307,15 +2329,15 @@ function render_llm_manifest {
         if (( ${#baseline_file_labels[@]} > 0 )); then
             local files_text
             files_text=$(humanize_list baseline_file_labels)
-            local descriptor="the baseline \`.promptignore\` file"
+            local descriptor="baseline \`.promptignore\` file"
             if (( ${#baseline_file_labels[@]} > 1 )); then
-                descriptor="the baseline \`.promptignore\` files"
+                descriptor="baseline \`.promptignore\` files"
             fi
             baseline_sources+=("$descriptor (${files_text})")
         fi
     fi
     if [[ -n "$ripgreprc_include" || -n "$ripgreprc_exclude" ]]; then
-        local rip_desc="the repo-wide \`.ripgreprc\`"
+        local rip_desc="repo-wide \`.ripgreprc\`"
         if [[ -n "$ripgreprc_path" ]]; then
             local rip_pretty
             rip_pretty=$(relativize_path_to_base "$dir_abs" "$ripgreprc_path")
@@ -3392,6 +3414,9 @@ function parse_arguments {
     PARSED_MODE="both"
     PARSED_OUTPUT_FILE=""
     PARSED_MANIFEST_MODE="off"
+
+    MAP_PATTERNS=()
+    MAP_COMMANDS=()
     
     # Target arrays - using parallel arrays to store target information
     TARGET_NAMES=()
@@ -3550,6 +3575,20 @@ function parse_arguments {
                         fatal "Unknown manifest mode '%s'. Supported modes: summary, full, llm." "$manifest_mode"
                         ;;
                 esac
+                ;;
+            --map)
+                if [[ -z "${2:-}" ]]; then
+                    fatal "Option --map requires an argument in the form '<GLOB>:<COMMAND>'"
+                fi
+                append_map_rule "$2"
+                shift
+                ;;
+            --map=*)
+                local map_spec="${1#--map=}"
+                if [[ -z "$map_spec" ]]; then
+                    fatal "Option --map requires an argument in the form '<GLOB>:<COMMAND>'"
+                fi
+                append_map_rule "$map_spec"
                 ;;
             --target)
                 if [[ -z "${2:-}" ]]; then
@@ -3896,14 +3935,70 @@ function get_file_list {
     rg --files-with-matches . --sort path "${filter_options[@]+"${filter_options[@]}"}"
 } # End of function get_file_list
 
+function resolve_file_command {
+    local file_path="$1"
+    local resolved_cmd="raw"
+    local normalized="$file_path"
+    while [[ "$normalized" == ./* ]]; do
+        normalized="${normalized:2}"
+    done
+
+    local idx
+    for idx in "${!MAP_PATTERNS[@]}"; do
+        local pattern="${MAP_PATTERNS[$idx]}"
+        if [[ -z "$pattern" ]]; then
+            continue
+        fi
+        if [[ "$file_path" == $pattern || "$normalized" == $pattern ]]; then
+            resolved_cmd="${MAP_COMMANDS[$idx]}"
+        fi
+    done
+
+    printf '%s\n' "$resolved_cmd"
+}
+
 # Visitor pattern to generate contents of a given file
 function visit_file {
     local file="$1"
     local src_delimiter='````'
+    local resolved_command
+    resolved_command=$(resolve_file_command "$file")
+
+    if [[ "$resolved_command" == "raw" ]]; then
+        # shellcheck disable=SC2016
+        printf '\n`%s`:\n\n' "$file"
+        printf '%s\n' "$src_delimiter"
+        cat "$file"
+        printf '\n%s\n' "$src_delimiter"
+        return
+    fi
+
     # shellcheck disable=SC2016
-    printf '\n`%s`:\n\n' "$file"
+    printf '\n`%s` (transformed via `%s`):\n\n' "$file" "$resolved_command"
     printf '%s\n' "$src_delimiter"
-    cat "$file"
+
+    local absolute_file="$file"
+    if [[ "$absolute_file" != /* ]]; then
+        absolute_file="$PWD/$absolute_file"
+    fi
+
+    local quoted_file
+    printf -v quoted_file '%q' "$absolute_file"
+
+    local command_to_run="$resolved_command"
+    if [[ "$command_to_run" == *'{}'* ]]; then
+        command_to_run="${command_to_run//\{\}/$quoted_file}"
+    else
+        command_to_run+=" $quoted_file"
+    fi
+
+    if eval "$command_to_run"; then
+        :
+    else
+        local exit_code=$?
+        printf '[Error: Failed to execute transformation command `%s` (exit %d)]\n' "$resolved_command" "$exit_code"
+    fi
+
     printf '\n%s\n' "$src_delimiter"
 } # End of function visit_file
 
@@ -3937,6 +4032,7 @@ function process_target {
     local add_rule_files_serialized="${10}"
     local symlink_behavior="${11}"
     local target_name="${12}"
+    local ignore_overrides_view=false
     local dir_abs
     dir_abs=$(cd "$dir" && pwd) || fatal "Failed to resolve directory '%s'" "$dir"
     
@@ -4014,6 +4110,7 @@ function process_target {
 
     # Handle ignore files based on new logic
     if [[ "${#ignore_files[@]}" -gt 0 ]]; then
+        ignore_overrides_view=true
         # When the caller provides --ignore-file flags, only those files define the view.
         for ignore_file in "${ignore_files[@]}"; do
             local normalized_ignore_file="$ignore_file"
@@ -4048,6 +4145,14 @@ function process_target {
     local baseline_ignore_serialized=""
     if [[ "${#baseline_ignore_files[@]}" -gt 0 ]]; then
         baseline_ignore_serialized=$(IFS='|'; echo "${baseline_ignore_files[*]}")
+    fi
+
+    if [[ "$ignore_overrides_view" == true ]]; then
+        config_dir=""
+        view_name=""
+        add_rules_serialized=""
+        drop_rules_serialized=""
+        add_rule_files_serialized=""
     fi
 
     if [[ "$FINDER_BACKEND" == "fd" ]]; then
